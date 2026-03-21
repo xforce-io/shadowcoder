@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import logging
+
+from shadowcoder.agents.base import AgentRequest
+from shadowcoder.agents.registry import AgentRegistry
+from shadowcoder.core.bus import Message, MessageBus, MessageType
+from shadowcoder.core.config import Config
+from shadowcoder.core.issue_store import IssueStore
+from shadowcoder.core.models import Issue, IssueStatus, TaskStatus
+from shadowcoder.core.task_manager import TaskManager
+
+logger = logging.getLogger(__name__)
+
+
+class Engine:
+    def __init__(self, bus, issue_store, task_manager, agent_registry, config, repo_path):
+        self.bus = bus
+        self.issue_store = issue_store
+        self.task_manager = task_manager
+        self.agents = agent_registry
+        self.config = config
+        self.repo_path = repo_path
+        self._bind_commands()
+
+    def _bind_commands(self):
+        self.bus.subscribe(MessageType.CMD_CREATE_ISSUE, self._on_create)
+        self.bus.subscribe(MessageType.CMD_DESIGN, self._on_design)
+        self.bus.subscribe(MessageType.CMD_DEVELOP, self._on_develop)
+        self.bus.subscribe(MessageType.CMD_TEST, self._on_test)
+        self.bus.subscribe(MessageType.CMD_RESUME, self._on_resume)
+        self.bus.subscribe(MessageType.CMD_APPROVE, self._on_approve)
+        self.bus.subscribe(MessageType.CMD_CANCEL, self._on_cancel)
+        self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
+        self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
+
+    async def _on_create(self, msg):
+        title = msg.payload["title"]
+        priority = msg.payload.get("priority", "medium")
+        tags = msg.payload.get("tags")
+        issue = self.issue_store.create(title, priority=priority, tags=tags)
+        await self.bus.publish(Message(MessageType.EVT_ISSUE_CREATED,
+            {"issue_id": issue.id, "title": issue.title}))
+
+    async def _review_with_retry(self, reviewer, request, max_retries=3):
+        for attempt in range(1, max_retries + 1):
+            try:
+                return await reviewer.review(request)
+            except Exception:
+                if attempt == max_retries:
+                    raise
+                await self.bus.publish(Message(MessageType.EVT_ERROR,
+                    {"message": f"reviewer failed, retry {attempt}/{max_retries}"}))
+
+    async def _run_all_reviewers(self, issue, task, action, review_section_key):
+        reviewer_names = self.config.get_reviewers(action)
+        all_passed = True
+        failed_reviewers = []
+
+        for rname in reviewer_names:
+            reviewer = self.agents.get(rname)
+            request = AgentRequest(action="review", issue=issue,
+                context={"worktree_path": task.worktree_path})
+            try:
+                review = await self._review_with_retry(reviewer, request)
+                self.issue_store.append_review(issue.id, review_section_key, review)
+                await self.bus.publish(Message(MessageType.EVT_REVIEW_RESULT,
+                    {"issue_id": issue.id, "reviewer": rname,
+                     "passed": review.passed, "comments": len(review.comments)}))
+                if not review.passed:
+                    all_passed = False
+            except Exception:
+                failed_reviewers.append(rname)
+                logger.warning("Reviewer %s unavailable after retries", rname)
+
+        if len(failed_reviewers) == len(reviewer_names):
+            raise RuntimeError(f"All reviewers unavailable: {failed_reviewers}")
+
+        return all_passed
+
+    async def _run_with_review(self, issue, task, action, review_stage,
+                                success_status, section_key, review_section_key):
+        max_rounds = self.config.get_max_review_rounds()
+        try:
+            for round_num in range(1, max_rounds + 1):
+                self.issue_store.transition_status(issue.id, IssueStatus[action.upper() + "ING"])
+                issue = self.issue_store.get(issue.id)
+                await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+                    {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
+
+                agent = self.agents.get(issue.assignee or "default")
+                request = AgentRequest(action=action, issue=issue,
+                    context={"worktree_path": task.worktree_path})
+                response = await agent.execute(request)
+
+                if not response.success:
+                    self.issue_store.update_section(issue.id, section_key, response.content)
+                    self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                    task.status = TaskStatus.FAILED
+                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                        {"issue_id": issue.id, "task_id": task.task_id,
+                         "reason": "agent reported failure"}))
+                    return
+
+                self.issue_store.update_section(issue.id, section_key, response.content)
+
+                self.issue_store.transition_status(issue.id, IssueStatus[review_stage.upper()])
+                issue = self.issue_store.get(issue.id)
+
+                all_passed = await self._run_all_reviewers(issue, task, action, review_section_key)
+
+                if all_passed:
+                    self.issue_store.transition_status(issue.id, success_status)
+                    task.status = TaskStatus.COMPLETED
+                    await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                        {"issue_id": issue.id, "task_id": task.task_id}))
+                    return
+
+                issue = self.issue_store.get(issue.id)
+
+            self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id,
+                 "reason": f"review not passed after {max_rounds} rounds"}))
+
+        except Exception as e:
+            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+
+    async def _on_design(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        task = await self.task_manager.create(issue, repo_path=self.repo_path,
+            action="design", agent_name=issue.assignee or "default")
+        await self._run_with_review(issue, task, action="design",
+            review_stage="design_review", success_status=IssueStatus.APPROVED,
+            section_key="设计", review_section_key="Design Review")
+
+    async def _on_develop(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        task = await self.task_manager.create(issue, repo_path=self.repo_path,
+            action="develop", agent_name=issue.assignee or "default")
+        await self._run_with_review(issue, task, action="develop",
+            review_stage="dev_review", success_status=IssueStatus.TESTING,
+            section_key="开发步骤", review_section_key="Dev Review")
+
+    async def _on_test(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        task = await self.task_manager.create(issue, repo_path=self.repo_path,
+            action="test", agent_name=issue.assignee or "default")
+        try:
+            if issue.status != IssueStatus.TESTING:
+                self.issue_store.transition_status(issue.id, IssueStatus.TESTING)
+            issue = self.issue_store.get(issue.id)
+
+            agent = self.agents.get(issue.assignee or "default")
+            response = await agent.execute(AgentRequest(action="test", issue=issue,
+                context={"worktree_path": task.worktree_path}))
+            self.issue_store.update_section(issue.id, "测试", response.content)
+
+            if response.success:
+                self.issue_store.transition_status(issue.id, IssueStatus.DONE)
+                task.status = TaskStatus.COMPLETED
+                await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                    {"issue_id": issue.id, "task_id": task.task_id}))
+            else:
+                self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                task.status = TaskStatus.FAILED
+                await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                    {"issue_id": issue.id, "task_id": task.task_id, "reason": "tests failed"}))
+
+        except Exception as e:
+            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+
+    def _infer_blocked_stage(self, issue):
+        if "Dev Review" in issue.sections:
+            return "develop"
+        if "Design Review" in issue.sections:
+            return "design"
+        return None
+
+    async def _on_resume(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        if issue.status != IssueStatus.BLOCKED:
+            await self.bus.publish(Message(MessageType.EVT_ERROR,
+                {"message": f"issue #{issue.id} is not BLOCKED"}))
+            return
+        action = self._infer_blocked_stage(issue)
+        if action == "design":
+            await self._on_design(msg)
+        elif action == "develop":
+            await self._on_develop(msg)
+        else:
+            await self.bus.publish(Message(MessageType.EVT_ERROR,
+                {"message": f"cannot infer blocked stage for issue #{issue.id}"}))
+
+    async def _on_approve(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        if issue.status != IssueStatus.BLOCKED:
+            await self.bus.publish(Message(MessageType.EVT_ERROR,
+                {"message": f"issue #{issue.id} is not BLOCKED"}))
+            return
+        stage = self._infer_blocked_stage(issue)
+        next_status = IssueStatus.TESTING if stage == "develop" else IssueStatus.APPROVED
+        self.issue_store.transition_status(issue.id, next_status)
+        await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+            {"issue_id": issue.id, "status": next_status.value}))
+
+    async def _on_cancel(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        self.issue_store.transition_status(issue.id, IssueStatus.CANCELLED)
+        for task in self.task_manager.list_active():
+            if task.issue_id == issue.id:
+                await self.task_manager.cancel(task.task_id)
+        await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+            {"issue_id": issue.id, "status": "cancelled"}))
+
+    async def _on_list(self, msg):
+        issues = self.issue_store.list_all()
+        await self.bus.publish(Message(MessageType.EVT_ISSUE_LIST, {
+            "issues": [{"id": i.id, "title": i.title, "status": i.status.value,
+                         "priority": i.priority} for i in issues]}))
+
+    async def _on_info(self, msg):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        await self.bus.publish(Message(MessageType.EVT_ISSUE_INFO, {
+            "issue": {"id": issue.id, "title": issue.title,
+                      "status": issue.status.value, "priority": issue.priority,
+                      "tags": issue.tags, "assignee": issue.assignee,
+                      "sections": list(issue.sections.keys())}}))
