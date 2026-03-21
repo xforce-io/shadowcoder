@@ -629,6 +629,16 @@ class Engine:
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
 
+    def _infer_blocked_stage(self, issue: Issue) -> str | None:
+        """从 issue 的 sections 推断 BLOCKED 发生在哪个阶段。
+        有 Design Review section 但无 Dev Review → blocked at design
+        有 Dev Review section → blocked at develop"""
+        if "Dev Review" in issue.sections:
+            return "develop"
+        if "Design Review" in issue.sections:
+            return "design"
+        return None
+
     async def _on_resume(self, msg: Message):
         """人类介入后恢复 BLOCKED 的 issue，重置轮次重跑"""
         issue = self.issue_store.get(msg.payload["issue_id"])
@@ -636,22 +646,25 @@ class Engine:
             await self.bus.publish(Message(MessageType.EVT_ERROR,
                 {"message": f"issue #{issue.id} 不在 BLOCKED 状态，无法 resume"}))
             return
-        # 根据上一次阶段决定重跑 design 还是 develop
-        action = msg.payload.get("action")  # 由 TUI 根据 issue 历史推断
+        action = self._infer_blocked_stage(issue)
         if action == "design":
             await self._on_design(msg)
         elif action == "develop":
             await self._on_develop(msg)
+        else:
+            await self.bus.publish(Message(MessageType.EVT_ERROR,
+                {"message": f"issue #{issue.id} 无法推断 BLOCKED 阶段"}))
 
     async def _on_approve(self, msg: Message):
-        """人类手动批准 BLOCKED 的 issue，跳过 review"""
+        """人类手动批准 BLOCKED 的 issue，跳过 review。
+        根据 BLOCKED 阶段自动推断下一状态"""
         issue = self.issue_store.get(msg.payload["issue_id"])
         if issue.status != IssueStatus.BLOCKED:
             await self.bus.publish(Message(MessageType.EVT_ERROR,
                 {"message": f"issue #{issue.id} 不在 BLOCKED 状态，无法 approve"}))
             return
-        # BLOCKED 在 design_review 阶段 → APPROVED; 在 dev_review 阶段 → TESTING
-        next_status = msg.payload.get("next_status", IssueStatus.APPROVED)
+        stage = self._infer_blocked_stage(issue)
+        next_status = IssueStatus.TESTING if stage == "develop" else IssueStatus.APPROVED
         self.issue_store.transition_status(issue.id, next_status)
         await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
             {"issue_id": issue.id, "status": next_status.value}))
