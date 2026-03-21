@@ -68,9 +68,15 @@ shadowcoder/
 
 ```
 created → designing → design_review → approved → developing → dev_review → testing → done
+                ↘          ↘                          ↘          ↘
+               failed     blocked                   failed     blocked
+                          (超过 max_review_rounds)              (超过 max_review_rounds)
 ```
 
-每个 review 阶段可能回退到前一步（带 review 意见重新执行）。
+- 每个 review 阶段可能回退到前一步（带 review 意见重新执行）
+- review 循环超过 `max_review_rounds`（默认 3）则进入 `blocked` 状态，等待人类介入
+- Agent 执行异常则进入 `failed` 状态
+- 用户可主动取消，进入 `cancelled` 状态
 
 ### Issue Markdown 文件
 
@@ -129,6 +135,11 @@ reviewers:
 
 review_policy:
   pass_threshold: no_high_or_critical
+  max_review_rounds: 3              # 超过则 issue 进入 blocked 状态
+
+logging:
+  dir: ~/.shadowcoder/logs
+  level: INFO
 
 issue_store:
   dir: .shadowcoder/issues
@@ -153,6 +164,9 @@ class IssueStatus(Enum):
     DEV_REVIEW = "dev_review"
     TESTING = "testing"
     DONE = "done"
+    FAILED = "failed"         # Agent 执行异常
+    BLOCKED = "blocked"       # review 循环超限，等待人类介入
+    CANCELLED = "cancelled"   # 用户主动取消
 
 class Severity(Enum):
     CRITICAL = "critical"
@@ -194,7 +208,15 @@ class Task:
     agent_name: str
     worktree_path: str | None = None
     status: str = "running"  # running / completed / failed / cancelled
+
+class TaskStatus(Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
 ```
+
+> 注：Task.status 将使用 TaskStatus 枚举替代裸字符串。
 
 ## Agent 抽象
 
@@ -282,12 +304,46 @@ class MessageBus:
 
     async def publish(self, message: Message):
         for handler in self._handlers.get(message.type, []):
-            await handler(message)
+            try:
+                await handler(message)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Handler failed for %s", message.type
+                )
 ```
 
 ## Engine 状态机
 
-Engine 驱动 issue 的生命周期流转，核心是 design/develop 阶段的 review 循环：
+Engine 驱动 issue 的生命周期流转，核心是 design/develop 阶段的 review 循环。
+
+**多 repo 策略**：每个 Engine 实例绑定一个 repo。多 repo 场景由上层（TUI/Skill）管理多个 Engine 实例。
+
+**Agent 注册**：Engine 通过 `AgentRegistry` 查找 Agent，Registry 根据配置文件实例化对应的 Agent 类：
+
+```python
+# agents/registry.py
+class AgentRegistry:
+    """根据配置实例化并缓存 Agent"""
+    _agent_classes: dict[str, type] = {}  # type name → class，通过 register() 注册
+
+    def __init__(self, config: dict):
+        self.config = config
+        self._instances: dict[str, BaseAgent] = {}
+
+    @classmethod
+    def register(cls, type_name: str, agent_class: type):
+        cls._agent_classes[type_name] = agent_class
+
+    def get(self, name: str) -> BaseAgent:
+        if name == "default":
+            name = self.config["agents"]["default"]
+        if name not in self._instances:
+            agent_conf = self.config["agents"]["available"][name]
+            cls = self._agent_classes[agent_conf["type"]]
+            self._instances[name] = cls(agent_conf)
+        return self._instances[name]
+```
 
 ```python
 # core/engine.py
@@ -296,8 +352,9 @@ class Engine:
         self.bus = bus
         self.issue_store = issue_store
         self.task_manager = task_manager
-        self.agents = agent_registry
+        self.agents = agent_registry  # AgentRegistry 实例
         self.config = config
+        self.max_review_rounds = config.get("review_policy", {}).get("max_review_rounds", 3)
         self._bind_commands()
 
     def _bind_commands(self):
@@ -306,36 +363,113 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_DEVELOP, self._on_develop)
         self.bus.subscribe(MessageType.CMD_TEST, self._on_test)
 
+    async def _run_with_review(self, issue, task, action, review_stage,
+                                success_status, section_key, review_section_key):
+        """通用的 执行→review→重试 循环，design 和 develop 共用"""
+        try:
+            for round_num in range(1, self.max_review_rounds + 1):
+                # 执行阶段
+                issue.status = IssueStatus[action.upper() + "ING"]  # DESIGNING / DEVELOPING
+                self.issue_store.save(issue)
+                await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+                    {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
+
+                agent = self.agents.get(issue.assignee or "default")
+                request = AgentRequest(action=action, issue=issue,
+                    context={"worktree_path": task.worktree_path})
+                response = await agent.execute(request)
+                issue.sections[section_key] = response.content
+
+                # Review 阶段
+                issue.status = IssueStatus[review_stage.upper()]
+                self.issue_store.save(issue)
+
+                reviewer_name = self.config["reviewers"][action][0]
+                reviewer = self.agents.get(reviewer_name)
+                review = await reviewer.review(
+                    AgentRequest(action="review", issue=issue,
+                        context={"worktree_path": task.worktree_path}))
+                issue.sections[review_section_key] = format_review(review)
+                self.issue_store.save(issue)
+
+                await self.bus.publish(Message(MessageType.EVT_REVIEW_RESULT,
+                    {"issue_id": issue.id, "passed": review.passed,
+                     "round": round_num, "comments": len(review.comments)}))
+
+                if review.passed:
+                    issue.status = success_status
+                    self.issue_store.save(issue)
+                    task.status = "completed"
+                    await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                        {"issue_id": issue.id, "task_id": task.task_id}))
+                    return
+                # 未通过：下一轮重试
+
+            # 超过 max_review_rounds，进入 blocked
+            issue.status = IssueStatus.BLOCKED
+            self.issue_store.save(issue)
+            task.status = "failed"
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id,
+                 "reason": f"review 未通过，已重试 {self.max_review_rounds} 轮"}))
+
+        except Exception as e:
+            issue.status = IssueStatus.FAILED
+            self.issue_store.save(issue)
+            task.status = "failed"
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+
     async def _on_design(self, msg: Message):
         issue = self.issue_store.get(msg.payload["issue_id"])
-        task = self.task_manager.create(issue, action="design")
+        task = self.task_manager.create(issue, repo_path=self.repo_path, action="design",
+            agent_name=issue.assignee or "default")
+        await self._run_with_review(
+            issue, task, action="design", review_stage="design_review",
+            success_status=IssueStatus.APPROVED,
+            section_key="设计", review_section_key="Design Review")
 
-        while True:
-            issue.status = IssueStatus.DESIGNING
+    async def _on_develop(self, msg: Message):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        task = self.task_manager.create(issue, repo_path=self.repo_path, action="develop",
+            agent_name=issue.assignee or "default")
+        await self._run_with_review(
+            issue, task, action="develop", review_stage="dev_review",
+            success_status=IssueStatus.TESTING,
+            section_key="开发步骤", review_section_key="Dev Review")
+
+    async def _on_test(self, msg: Message):
+        """测试阶段：执行测试，无 review 循环"""
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        task = self.task_manager.create(issue, repo_path=self.repo_path, action="test",
+            agent_name=issue.assignee or "default")
+        try:
+            issue.status = IssueStatus.TESTING
             self.issue_store.save(issue)
-            await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED, {...}))
 
-            agent = self.agents[issue.assignee or "default"]
-            request = AgentRequest(action="design", issue=issue, context={...})
-            response = await agent.execute(request)
-            issue.sections["设计"] = response.content
+            agent = self.agents.get(issue.assignee or "default")
+            response = await agent.execute(AgentRequest(
+                action="test", issue=issue,
+                context={"worktree_path": task.worktree_path}))
+            issue.sections["测试"] = response.content
 
-            issue.status = IssueStatus.DESIGN_REVIEW
+            if response.success:
+                issue.status = IssueStatus.DONE
+                task.status = "completed"
+            else:
+                issue.status = IssueStatus.FAILED
+                task.status = "failed"
             self.issue_store.save(issue)
+            await self.bus.publish(Message(
+                MessageType.EVT_TASK_COMPLETED if response.success else MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id}))
 
-            reviewer_name = self.config.reviewers["design"][0]
-            reviewer = self.agents[reviewer_name]
-            review = await reviewer.review(
-                AgentRequest(action="review", issue=issue, context={...})
-            )
-            issue.sections["Design Review"] = format_review(review)
-
-            if review.passed:
-                issue.status = IssueStatus.APPROVED
-                self.issue_store.save(issue)
-                await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED, {...}))
-                break
-            # 未通过：带 review 意见重新 design
+        except Exception as e:
+            issue.status = IssueStatus.FAILED
+            self.issue_store.save(issue)
+            task.status = "failed"
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
 ```
 
 ## TaskManager
@@ -379,39 +513,44 @@ class TaskManager:
 
 ```python
 # core/worktree.py
-import subprocess
+import asyncio
 from pathlib import Path
 
 class WorktreeManager:
     def __init__(self, base_dir=".shadowcoder/worktrees"):
         self.base_dir = base_dir
 
-    def create(self, repo_path, issue_id) -> str:
+    async def _run_git(self, repo_path: str, *args) -> str:
+        proc = await asyncio.create_subprocess_exec(
+            "git", *args,
+            cwd=repo_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"git {args[0]} failed: {stderr.decode()}")
+        return stdout.decode()
+
+    async def create(self, repo_path, issue_id) -> str:
         branch = f"shadowcoder/issue-{issue_id}"
         wt_path = str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
-        subprocess.run(
-            ["git", "worktree", "add", "-b", branch, wt_path],
-            cwd=repo_path, check=True,
-        )
+        await self._run_git(repo_path, "worktree", "add", "-b", branch, wt_path)
         return wt_path
 
-    def remove(self, repo_path, issue_id):
+    async def remove(self, repo_path, issue_id):
         wt_path = str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
-        subprocess.run(
-            ["git", "worktree", "remove", wt_path],
-            cwd=repo_path, check=True,
-        )
+        await self._run_git(repo_path, "worktree", "remove", wt_path)
 
-    def list(self, repo_path) -> list[str]:
-        result = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=repo_path, capture_output=True, text=True,
-        )
+    async def list(self, repo_path) -> list[str]:
+        output = await self._run_git(repo_path, "worktree", "list", "--porcelain")
         return [
-            l.split()[1] for l in result.stdout.splitlines()
+            l.split()[1] for l in output.splitlines()
             if l.startswith("worktree")
         ]
 ```
+
+> 注：worktree 创建在 `.shadowcoder/worktrees/` 下，该目录需加入目标仓库的 `.gitignore`。IssueStore 初始化时应自动确保 `.shadowcoder/worktrees` 在 `.gitignore` 中。
 
 ## IssueStore
 
@@ -540,7 +679,16 @@ class ShadowCoderApp(App):
             case ["test", ref]:
                 return Message(MessageType.CMD_TEST, {"issue_id": int(ref.lstrip("#"))})
             case _:
-                return Message(MessageType.EVT_ERROR, {"message": f"未知命令: {cmd}"})
+                # 未知命令直接在 TUI 本地处理，不走 bus
+                self.query_one("#output", RichLog).write(f"[red]未知命令: {cmd}[/red]")
+                return None
+```
+
+### 入口（`pyproject.toml`）
+
+```toml
+[project.scripts]
+shadowcoder = "shadowcoder.cli.tui.app:main"
 ```
 
 ## 关键设计决策
