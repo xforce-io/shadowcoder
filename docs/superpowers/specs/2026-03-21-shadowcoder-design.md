@@ -207,7 +207,11 @@ class Task:
     action: str          # design / develop / test
     agent_name: str
     worktree_path: str | None = None
-    status: str = "running"  # running / completed / failed / cancelled
+    status: "TaskStatus" = None  # 见下方 TaskStatus
+
+    def __post_init__(self):
+        if self.status is None:
+            self.status = TaskStatus.RUNNING
 
 class TaskStatus(Enum):
     RUNNING = "running"
@@ -215,8 +219,6 @@ class TaskStatus(Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
 ```
-
-> 注：Task.status 将使用 TaskStatus 枚举替代裸字符串。
 
 ## Agent 抽象
 
@@ -348,12 +350,13 @@ class AgentRegistry:
 ```python
 # core/engine.py
 class Engine:
-    def __init__(self, bus, issue_store, task_manager, agent_registry, config):
+    def __init__(self, bus, issue_store, task_manager, agent_registry, config, repo_path):
         self.bus = bus
         self.issue_store = issue_store
         self.task_manager = task_manager
         self.agents = agent_registry  # AgentRegistry 实例
         self.config = config
+        self.repo_path = repo_path
         self.max_review_rounds = config.get("review_policy", {}).get("max_review_rounds", 3)
         self._bind_commands()
 
@@ -399,7 +402,7 @@ class Engine:
                 if review.passed:
                     issue.status = success_status
                     self.issue_store.save(issue)
-                    task.status = "completed"
+                    task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
@@ -408,7 +411,7 @@ class Engine:
             # 超过 max_review_rounds，进入 blocked
             issue.status = IssueStatus.BLOCKED
             self.issue_store.save(issue)
-            task.status = "failed"
+            task.status = TaskStatus.FAILED
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id,
                  "reason": f"review 未通过，已重试 {self.max_review_rounds} 轮"}))
@@ -416,13 +419,13 @@ class Engine:
         except Exception as e:
             issue.status = IssueStatus.FAILED
             self.issue_store.save(issue)
-            task.status = "failed"
+            task.status = TaskStatus.FAILED
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
 
     async def _on_design(self, msg: Message):
         issue = self.issue_store.get(msg.payload["issue_id"])
-        task = self.task_manager.create(issue, repo_path=self.repo_path, action="design",
+        task = await self.task_manager.create(issue, repo_path=self.repo_path, action="design",
             agent_name=issue.assignee or "default")
         await self._run_with_review(
             issue, task, action="design", review_stage="design_review",
@@ -431,7 +434,7 @@ class Engine:
 
     async def _on_develop(self, msg: Message):
         issue = self.issue_store.get(msg.payload["issue_id"])
-        task = self.task_manager.create(issue, repo_path=self.repo_path, action="develop",
+        task = await self.task_manager.create(issue, repo_path=self.repo_path, action="develop",
             agent_name=issue.assignee or "default")
         await self._run_with_review(
             issue, task, action="develop", review_stage="dev_review",
@@ -441,7 +444,7 @@ class Engine:
     async def _on_test(self, msg: Message):
         """测试阶段：执行测试，无 review 循环"""
         issue = self.issue_store.get(msg.payload["issue_id"])
-        task = self.task_manager.create(issue, repo_path=self.repo_path, action="test",
+        task = await self.task_manager.create(issue, repo_path=self.repo_path, action="test",
             agent_name=issue.assignee or "default")
         try:
             issue.status = IssueStatus.TESTING
@@ -455,10 +458,10 @@ class Engine:
 
             if response.success:
                 issue.status = IssueStatus.DONE
-                task.status = "completed"
+                task.status = TaskStatus.COMPLETED
             else:
                 issue.status = IssueStatus.FAILED
-                task.status = "failed"
+                task.status = TaskStatus.FAILED
             self.issue_store.save(issue)
             await self.bus.publish(Message(
                 MessageType.EVT_TASK_COMPLETED if response.success else MessageType.EVT_TASK_FAILED,
@@ -467,7 +470,7 @@ class Engine:
         except Exception as e:
             issue.status = IssueStatus.FAILED
             self.issue_store.save(issue)
-            task.status = "failed"
+            task.status = TaskStatus.FAILED
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
 ```
@@ -485,9 +488,9 @@ class TaskManager:
         self.worktree_manager = worktree_manager
         self._running: dict[str, asyncio.Task] = {}
 
-    def create(self, issue, repo_path, action, agent_name) -> Task:
+    async def create(self, issue, repo_path, action, agent_name) -> Task:
         task_id = str(uuid.uuid4())[:8]
-        worktree_path = self.worktree_manager.create(repo_path, issue.id)
+        worktree_path = await self.worktree_manager.create(repo_path, issue.id)
         task = Task(
             task_id=task_id, issue_id=issue.id, repo_path=repo_path,
             action=action, agent_name=agent_name, worktree_path=worktree_path,
@@ -501,12 +504,12 @@ class TaskManager:
         return atask
 
     def list_active(self) -> list[Task]:
-        return [t for t in self.tasks.values() if t.status == "running"]
+        return [t for t in self.tasks.values() if t.status == TaskStatus.RUNNING]
 
     async def cancel(self, task_id):
         if task_id in self._running:
             self._running[task_id].cancel()
-            self.tasks[task_id].status = "cancelled"
+            self.tasks[task_id].status = TaskStatus.CANCELLED
 ```
 
 ## WorktreeManager
