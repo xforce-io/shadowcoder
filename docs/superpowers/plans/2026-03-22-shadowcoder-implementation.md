@@ -680,6 +680,8 @@ class MessageType(Enum):
     EVT_TASK_STARTED = "evt.task_started"
     EVT_TASK_COMPLETED = "evt.task_completed"
     EVT_TASK_FAILED = "evt.task_failed"
+    EVT_ISSUE_LIST = "evt.issue_list"
+    EVT_ISSUE_INFO = "evt.issue_info"
     EVT_ERROR = "evt.error"
 
 
@@ -1632,6 +1634,7 @@ async def test_develop_happy_path(bus, store, task_mgr, registry_with, config):
 
 
 async def test_test_happy_path(bus, store, task_mgr, registry_with, config):
+    """Issue already at TESTING (normal flow after develop), _on_test skips transition."""
     engine = make_engine(bus, store, task_mgr, registry_with, config)
     issue = store.create("Test issue")
     store.transition_status(issue.id, IssueStatus.DESIGNING)
@@ -1641,11 +1644,17 @@ async def test_test_happy_path(bus, store, task_mgr, registry_with, config):
     store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
     store.transition_status(issue.id, IssueStatus.TESTING)
 
-    # For test, we need a fresh transition from TESTING → DONE which requires
-    # the issue to be in a state where TESTING is valid. Let's re-enter TESTING.
-    # Actually _on_test calls transition_status to TESTING itself. We need
-    # issue at a state where transition to TESTING is valid.
-    # Let's reset: FAILED can go to TESTING
+    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.DONE
+
+
+async def test_test_from_failed(bus, store, task_mgr, registry_with, config):
+    """Retry test from FAILED state — transitions to TESTING then DONE."""
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    issue = store.create("Test issue")
+    store.transition_status(issue.id, IssueStatus.DESIGNING)
     store.transition_status(issue.id, IssueStatus.FAILED)
 
     await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
@@ -1698,6 +1707,83 @@ async def test_create_issue(bus, store, task_mgr, registry_with, config):
     assert len(events) == 1
     issue = store.get(events[0].payload["issue_id"])
     assert issue.title == "New feature"
+
+
+async def test_resume_blocked_design(bus, store, task_mgr, config):
+    """Resume a BLOCKED design issue should re-run design and succeed if agent/review pass."""
+    call_count = 0
+    agent = AsyncMock()
+
+    async def execute_side_effect(request):
+        return AgentResponse(content="output", success=True)
+
+    async def review_side_effect(request):
+        nonlocal call_count
+        call_count += 1
+        # First 3 calls (max_review_rounds) fail, then pass on resume
+        if call_count <= config.get_max_review_rounds():
+            return ReviewResult(passed=False,
+                comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
+                reviewer="mock")
+        return ReviewResult(passed=True, comments=[], reviewer="mock")
+
+    agent.execute = AsyncMock(side_effect=execute_side_effect)
+    agent.review = AsyncMock(side_effect=review_side_effect)
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    store.create("Test issue")
+
+    # Design until BLOCKED
+    await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+    assert store.get(1).status == IssueStatus.BLOCKED
+
+    # Resume — now review passes
+    await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
+    assert store.get(1).status == IssueStatus.APPROVED
+
+
+async def test_all_reviewers_unavailable(bus, store, task_mgr, config):
+    """When all reviewers crash, issue goes to FAILED."""
+    agent = AsyncMock()
+    agent.execute = AsyncMock(return_value=AgentResponse(content="output", success=True))
+    agent.review = AsyncMock(side_effect=RuntimeError("reviewer crash"))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    store.create("Test issue")
+
+    await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.FAILED
+
+
+async def test_list_issues(bus, store, task_mgr, registry_with, config):
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    events = []
+    bus.subscribe(MessageType.EVT_ISSUE_LIST, lambda m: events.append(m))
+
+    store.create("A")
+    store.create("B")
+    await bus.publish(Message(MessageType.CMD_LIST, {}))
+
+    assert len(events) == 1
+    assert len(events[0].payload["issues"]) == 2
+
+
+async def test_info_issue(bus, store, task_mgr, registry_with, config):
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    events = []
+    bus.subscribe(MessageType.EVT_ISSUE_INFO, lambda m: events.append(m))
+
+    store.create("Test")
+    await bus.publish(Message(MessageType.CMD_INFO, {"issue_id": 1}))
+
+    assert len(events) == 1
+    assert events[0].payload["issue"]["title"] == "Test"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1750,6 +1836,8 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_RESUME, self._on_resume)
         self.bus.subscribe(MessageType.CMD_APPROVE, self._on_approve)
         self.bus.subscribe(MessageType.CMD_CANCEL, self._on_cancel)
+        self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
+        self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
 
     async def _on_create(self, msg: Message):
         title = msg.payload["title"]
@@ -1897,7 +1985,8 @@ class Engine:
             issue, repo_path=self.repo_path, action="test",
             agent_name=issue.assignee or "default")
         try:
-            self.issue_store.transition_status(issue.id, IssueStatus.TESTING)
+            if issue.status != IssueStatus.TESTING:
+                self.issue_store.transition_status(issue.id, IssueStatus.TESTING)
             issue = self.issue_store.get(issue.id)
 
             agent = self.agents.get(issue.assignee or "default")
@@ -1974,6 +2063,26 @@ class Engine:
                 await self.task_manager.cancel(task.task_id)
         await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED, {
             "issue_id": issue.id, "status": "cancelled",
+        }))
+
+    async def _on_list(self, msg: Message):
+        issues = self.issue_store.list_all()
+        await self.bus.publish(Message(MessageType.EVT_ISSUE_LIST, {
+            "issues": [
+                {"id": i.id, "title": i.title, "status": i.status.value, "priority": i.priority}
+                for i in issues
+            ],
+        }))
+
+    async def _on_info(self, msg: Message):
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        await self.bus.publish(Message(MessageType.EVT_ISSUE_INFO, {
+            "issue": {
+                "id": issue.id, "title": issue.title,
+                "status": issue.status.value, "priority": issue.priority,
+                "tags": issue.tags, "assignee": issue.assignee,
+                "sections": list(issue.sections.keys()),
+            },
         }))
 ```
 
