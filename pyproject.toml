@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shadowcoder"
+version = "0.1.0"
+description = "Agent-based issue management and development system"
+requires-python = ">=3.12"
+dependencies = [
+    "textual>=3.0",
+    "pyyaml>=6.0",
+    "python-frontmatter>=1.1",
+]
+
+[project.scripts]
+shadowcoder = "shadowcoder.cli.tui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shadowcoder"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
