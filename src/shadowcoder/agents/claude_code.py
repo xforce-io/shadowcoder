@@ -3,11 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from textwrap import dedent
 
 from shadowcoder.agents.base import BaseAgent
 from shadowcoder.agents.types import (
-    AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    AgentRequest, AgentUsage, DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
     ReviewComment, Severity,
 )
 
@@ -59,6 +60,47 @@ class ClaudeCodeAgent(BaseAgent):
 
         return stdout.decode("utf-8")
 
+    async def _run_claude_with_usage(self, prompt: str, cwd: str | None = None,
+                                      system_prompt: str | None = None) -> tuple[str, AgentUsage]:
+        """Call claude CLI with JSON output to capture usage stats."""
+        start = time.monotonic()
+        cmd = [
+            "claude", "-p",
+            "--output-format", "json",
+            "--model", self._get_model(),
+            "--permission-mode", self._get_permission_mode(),
+        ]
+        if system_prompt:
+            cmd.extend(["--system-prompt", system_prompt])
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+        duration_ms = int((time.monotonic() - start) * 1000)
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"claude CLI failed: {stderr.decode().strip()}")
+
+        data = json.loads(stdout.decode("utf-8"))
+
+        # Extract text result from JSON response
+        result_text = data.get("result", "")
+
+        # Extract usage
+        usage_data = data.get("usage", {})
+        usage = AgentUsage(
+            input_tokens=usage_data.get("input_tokens", 0),
+            output_tokens=usage_data.get("output_tokens", 0),
+            duration_ms=duration_ms,
+            cost_usd=data.get("cost_usd") or usage_data.get("cost_usd"),
+        )
+        return result_text, usage
+
     def _build_context(self, request: AgentRequest) -> str:
         """Build context string from issue sections."""
         issue = request.issue
@@ -83,8 +125,8 @@ class ClaudeCodeAgent(BaseAgent):
             Output ONLY the design document in markdown format.
         """)
         prompt = f"{context}\n\nProduce the technical design for this issue."
-        result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
-        return DesignOutput(document=result)
+        result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
+        return DesignOutput(document=result, usage=usage)
 
     async def develop(self, request: AgentRequest) -> DevelopOutput:
         cwd = request.context.get("worktree_path")
@@ -104,9 +146,9 @@ class ClaudeCodeAgent(BaseAgent):
             and what files you created/modified.
         """)
         prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
-        result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
+        result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
         files_changed = await self._get_files_changed(cwd or "")
-        return DevelopOutput(summary=result, files_changed=files_changed)
+        return DevelopOutput(summary=result, files_changed=files_changed, usage=usage)
 
     async def review(self, request: AgentRequest) -> ReviewOutput:
         cwd = request.context.get("worktree_path")
@@ -134,7 +176,7 @@ class ClaudeCodeAgent(BaseAgent):
         """)
         prompt = f"{context}\n\nReview the current design/implementation against requirements."
 
-        result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
+        result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
 
         # Parse JSON from the response
         try:
@@ -157,6 +199,7 @@ class ClaudeCodeAgent(BaseAgent):
                 passed=data.get("passed", False),
                 comments=comments,
                 reviewer="claude-code",
+                usage=usage,
             )
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             logger.warning("Failed to parse review JSON, treating as not passed: %s", e)
@@ -167,6 +210,7 @@ class ClaudeCodeAgent(BaseAgent):
                     message=f"Review output could not be parsed: {result[:200]}",
                 )],
                 reviewer="claude-code",
+                usage=usage,
             )
 
     async def test(self, request: AgentRequest) -> TestOutput:
@@ -193,7 +237,7 @@ class ClaudeCodeAgent(BaseAgent):
             RESULT: FAIL recommendation=develop  (or recommendation=design)
         """)
         prompt = f"{context}\n\nRun all tests and benchmarks. Report results."
-        result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
+        result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
 
         success = False
         recommendation = None
@@ -208,4 +252,4 @@ class ClaudeCodeAgent(BaseAgent):
                         recommendation = line.split("recommendation=")[1].strip()
                 break
 
-        return TestOutput(report=result, success=success, recommendation=recommendation)
+        return TestOutput(report=result, success=success, recommendation=recommendation, usage=usage)

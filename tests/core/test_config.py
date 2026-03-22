@@ -67,3 +67,18 @@ def test_get_log_level(tmp_config):
 def test_missing_config_file():
     with pytest.raises(FileNotFoundError):
         Config("/nonexistent/config.yaml")
+
+
+def test_get_max_budget_usd_not_set(tmp_config):
+    config = Config(str(tmp_config))
+    assert config.get_max_budget_usd() is None
+
+
+def test_get_max_budget_usd_set(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "agents:\n  default: x\n  available:\n    x:\n      type: x\n"
+        "review_policy:\n  max_budget_usd: 2.50\n"
+    )
+    config = Config(str(config_path))
+    assert config.get_max_budget_usd() == 2.50

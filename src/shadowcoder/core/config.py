@@ -31,6 +31,9 @@ class Config:
     def get_max_test_retries(self) -> int:
         return self._data.get("review_policy", {}).get("max_test_retries", 3)
 
+    def get_max_budget_usd(self) -> float | None:
+        return self._data.get("review_policy", {}).get("max_budget_usd")
+
     def get_issue_dir(self) -> str:
         return self._data.get("issue_store", {}).get("dir", ".shadowcoder/issues")
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from shadowcoder.agents.types import AgentRequest, AgentActionFailed
+from shadowcoder.agents.types import AgentRequest, AgentActionFailed, AgentUsage
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -22,6 +22,7 @@ class Engine:
         self.agents = agent_registry
         self.config = config
         self.repo_path = repo_path
+        self._usage_by_issue: dict[int, list[AgentUsage]] = {}
         self._bind_commands()
 
     def _bind_commands(self):
@@ -35,6 +36,43 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
         self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
         self.bus.subscribe(MessageType.CMD_CLEANUP, self._on_cleanup)
+
+    def _track_usage(self, issue_id: int, usage: AgentUsage | None):
+        """Accumulate usage for an issue."""
+        if usage is None:
+            return
+        self._usage_by_issue.setdefault(issue_id, []).append(usage)
+
+    def _total_cost(self, issue_id: int) -> float:
+        """Get total cost for an issue."""
+        usages = self._usage_by_issue.get(issue_id, [])
+        return sum(u.cost_usd or 0 for u in usages)
+
+    def _total_tokens(self, issue_id: int) -> tuple[int, int]:
+        """Get total (input_tokens, output_tokens) for an issue."""
+        usages = self._usage_by_issue.get(issue_id, [])
+        return (sum(u.input_tokens for u in usages),
+                sum(u.output_tokens for u in usages))
+
+    def _usage_summary(self, issue_id: int) -> str:
+        """Format usage summary for logging."""
+        usages = self._usage_by_issue.get(issue_id, [])
+        if not usages:
+            return "No usage data"
+        input_t, output_t = self._total_tokens(issue_id)
+        cost = self._total_cost(issue_id)
+        total_duration = sum(u.duration_ms for u in usages) / 1000
+        return (f"Calls: {len(usages)} | "
+                f"Tokens: {input_t:,} in + {output_t:,} out | "
+                f"Cost: ${cost:.4f} | "
+                f"Time: {total_duration:.1f}s")
+
+    def _check_budget(self, issue_id: int) -> bool:
+        """Check if budget exceeded. Returns True if over budget."""
+        max_budget = self.config.get_max_budget_usd()
+        if max_budget is None:
+            return False
+        return self._total_cost(issue_id) > max_budget
 
     def _log(self, issue_id: int, entry: str):
         """Append to 航海日志."""
@@ -77,6 +115,7 @@ class Engine:
                 context={"worktree_path": task.worktree_path})
             try:
                 review = await self._review_with_retry(reviewer, request)
+                self._track_usage(issue.id, review.usage)
                 self.issue_store.append_review(issue.id, review_section_key, review)
                 await self.bus.publish(Message(MessageType.EVT_REVIEW_RESULT,
                     {"issue_id": issue.id, "reviewer": rname,
@@ -122,6 +161,22 @@ class Engine:
                     feat_summary = f" (files: {', '.join(files)})" if files else ""
                 else:
                     raise ValueError(f"Unknown action for _run_with_review: {action}")
+
+                self._track_usage(issue.id, output.usage)
+                if output.usage:
+                    self._log(issue.id,
+                        f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
+                        f"${output.usage.cost_usd or 0:.4f}")
+                if self._check_budget(issue.id):
+                    summary = self._usage_summary(issue.id)
+                    self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
+                    self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                    self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+                    task.status = TaskStatus.FAILED
+                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+                        "issue_id": issue.id, "task_id": task.task_id,
+                        "reason": f"budget exceeded: {summary}"}))
+                    return
 
                 self.issue_store.update_section(issue.id, section_key, content)
                 self._log(issue.id,
@@ -212,6 +267,21 @@ class Engine:
                 request = AgentRequest(action="test", issue=issue,
                     context={"worktree_path": task.worktree_path})
                 output = await agent.test(request)
+                self._track_usage(issue.id, output.usage)
+                if output.usage:
+                    self._log(issue.id,
+                        f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
+                        f"${output.usage.cost_usd or 0:.4f}")
+                if self._check_budget(issue.id):
+                    summary = self._usage_summary(issue.id)
+                    self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
+                    self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                    self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+                    task.status = TaskStatus.FAILED
+                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+                        "issue_id": issue.id, "task_id": task.task_id,
+                        "reason": f"budget exceeded: {summary}"}))
+                    return
                 self.issue_store.update_section(issue.id, "测试", output.report)
 
                 if output.success:
@@ -220,6 +290,7 @@ class Engine:
                     self.issue_store.transition_status(issue.id, IssueStatus.DONE)
                     self._log(issue.id,
                         f"Test R{attempt} — PASSED ({passed}/{total}) → DONE")
+                    self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
                     self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,

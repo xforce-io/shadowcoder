@@ -7,7 +7,7 @@ from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.models import IssueStatus, TaskStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
-    AgentRequest, AgentActionFailed,
+    AgentRequest, AgentActionFailed, AgentUsage,
     DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
     ReviewComment, Severity,
 )
@@ -334,3 +334,51 @@ async def test_cleanup_non_done_issue(bus, store, task_mgr, mock_worktree, regis
     mock_worktree.cleanup.assert_not_called()
     assert len(error_events) == 1
     assert "not DONE or CANCELLED" in error_events[0].payload["message"]
+
+
+async def test_budget_exceeded(bus, store, task_mgr, config, tmp_path):
+    """Agent returns usage that exceeds the budget; issue should become BLOCKED."""
+    # Create a config with a very low max_budget_usd
+    config_path = tmp_path / "config_budget.yaml"
+    config_path.write_text("""\
+agents:
+  default: claude-code
+  available:
+    claude-code:
+      type: claude_code
+reviewers:
+  design: [claude-code]
+  develop: [claude-code]
+review_policy:
+  max_review_rounds: 3
+  max_budget_usd: 0.001
+logging:
+  dir: /tmp/shadowcoder-test/logs
+  level: INFO
+issue_store:
+  dir: .shadowcoder/issues
+worktree:
+  base_dir: .shadowcoder/worktrees
+""")
+    from shadowcoder.core.config import Config as Cfg
+    budget_config = Cfg(str(config_path))
+
+    expensive_usage = AgentUsage(input_tokens=1000, output_tokens=500,
+                                 duration_ms=2000, cost_usd=1.00)
+    agent = AsyncMock()
+    agent.design = AsyncMock(return_value=DesignOutput(document="design", usage=expensive_usage))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    failed_events = []
+    bus.subscribe(MessageType.EVT_TASK_FAILED, lambda m: failed_events.append(m))
+
+    engine = make_engine(bus, store, task_mgr, reg, budget_config)
+    store.create("Budget test issue")
+
+    await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.BLOCKED
+    assert len(failed_events) == 1
+    assert "budget exceeded" in failed_events[0].payload["reason"]
