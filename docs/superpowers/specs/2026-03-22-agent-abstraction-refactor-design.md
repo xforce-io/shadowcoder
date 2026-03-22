@@ -17,6 +17,15 @@ AgentResponse 是自由文本（content: str），Engine 侧 ad-hoc 解析格式
 子类负责把 LLM 原始输出解析成结构化类型，Base class 提供辅助方法。
 Engine 直接使用结构化字段，零解析逻辑。
 
+## 类型文件位置
+
+所有新类型（Output types + AgentUsage + ReviewComment）统一放在 `agents/types.py`。
+`ReviewComment` 从 `core/models.py` 迁移过来，`core/models.py` 中删除 `ReviewResult` 和 `ReviewComment`。
+不做 backward compat alias（避免循环导入），一次性迁移所有引用。
+
+`AgentRequest` 从 `agents/base.py` 迁移到 `agents/types.py`，和其他类型放一起。
+`prompt_override` 字段保留（供子类使用），`action` 字段保留（供日志和子类内部判断）。
+
 ## 结构化输出类型
 
 新建 `agents/types.py`：
@@ -24,7 +33,22 @@ Engine 直接使用结构化字段，零解析逻辑。
 ```python
 from __future__ import annotations
 from dataclasses import dataclass, field
-from shadowcoder.core.models import ReviewComment
+from enum import Enum
+
+
+# 从 core/models.py 迁移过来
+class Severity(Enum):
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+
+
+@dataclass
+class ReviewComment:
+    severity: Severity
+    message: str
+    location: str | None = None
 
 
 @dataclass
@@ -66,7 +90,33 @@ class TestOutput:
     usage: AgentUsage | None = None
 ```
 
-`ReviewOutput` 取代现有的 `ReviewResult`（相同字段 + usage）。
+`ReviewOutput` 取代现有的 `ReviewResult` 和 `ReviewComment`（迁移到 agents/types.py）。
+
+## 删除项
+
+从 `agents/base.py` 删除：`AgentResponse`、`AgentStream`、`AgentRequest`（迁移到 types.py）。
+从 `core/models.py` 删除：`ReviewResult`、`ReviewComment`、`Severity`（迁移到 agents/types.py）。
+从 `agents/base.py` 删除：`stream()` 抽象方法（未来如需 streaming 再加）。
+
+## 软失败
+
+Agent 无法完成 action 时，有两种失败模式：
+
+1. **硬失败**（异常）：不可恢复的错误（CLI 崩溃、网络不可达），直接抛异常
+2. **软失败**（部分结果）：agent 尝试了但无法完成，返回部分产出
+
+用自定义异常区分：
+```python
+class AgentActionFailed(Exception):
+    """Agent tried but could not complete the action."""
+    def __init__(self, message: str, partial_output: str = ""):
+        self.partial_output = partial_output
+        super().__init__(message)
+```
+
+Engine 的 `except` 处理：
+- `AgentActionFailed` → 保存 partial_output 到 section，状态 → FAILED
+- 其他 `Exception` → 状态 → FAILED，不保存内容
 
 ## BaseAgent 新接口
 
@@ -94,18 +144,23 @@ class BaseAgent(ABC):
     # --- 辅助方法 ---
 
     async def _get_files_changed(self, worktree_path: str) -> list[str]:
-        """通过 git diff + ls-files 获取实际变更文件列表，不依赖 agent 自报"""
-        proc = await asyncio.create_subprocess_exec(
-            "git", "diff", "--name-only", "HEAD",
-            cwd=worktree_path, stdout=asyncio.subprocess.PIPE)
-        stdout, _ = await proc.communicate()
-        proc2 = await asyncio.create_subprocess_exec(
-            "git", "ls-files", "--others", "--exclude-standard",
-            cwd=worktree_path, stdout=asyncio.subprocess.PIPE)
-        stdout2, _ = await proc2.communicate()
-        files = set(stdout.decode().strip().splitlines()
-                    + stdout2.decode().strip().splitlines())
-        return sorted(f for f in files if f)
+        """通过 git 获取所有变更文件（含 untracked），相对于分支点。"""
+        if not worktree_path:
+            return []
+        async def _run(args):
+            proc = await asyncio.create_subprocess_exec(
+                *args, cwd=worktree_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE)
+            stdout, _ = await proc.communicate()
+            if proc.returncode != 0:
+                return []
+            return [f for f in stdout.decode().strip().splitlines() if f]
+
+        # 找到分支点（与 main/master 的 merge-base）
+        base_files = await _run(["git", "diff", "--name-only", "HEAD"])
+        untracked = await _run(["git", "ls-files", "--others", "--exclude-standard"])
+        return sorted(set(base_files + untracked))
 
     def _extract_json(self, raw: str) -> dict:
         """从 raw 文本中提取 JSON，支持被 markdown 代码块包裹"""
@@ -164,11 +219,15 @@ async def _on_test(self, msg):
     output = await agent.test(request)
     self.issue_store.update_section(issue.id, "测试", output.report)
 
+    passed = output.passed_count
+    total = output.total_count
     if output.success:
-        # 直接用 output.success，不解析 RESULT: 行
+        self._log(issue.id, f"Test R{attempt} — PASSED ({passed}/{total}) → DONE")
         ...
     else:
-        recommendation = output.recommendation  # 直接字段，不从 metadata 读
+        self._log(issue.id, f"Test R{attempt} — FAILED ({passed}/{total})\n"
+            f"Recommendation: {output.recommendation or 'none'}")
+        recommendation = output.recommendation
         ...
 ```
 
@@ -213,29 +272,34 @@ class ClaudeCodeAgent(BaseAgent):
 - **未来 Codex**: `response_format: { type: "json_schema" }`
 - **未来 LangChain**: `PydanticOutputParser(pydantic_object=ReviewOutput)`
 
-## 模型兼容性
+## 迁移策略
 
-`ReviewResult`（core/models.py）重命名为 `ReviewOutput`（agents/types.py），
-原位置保留别名以兼容：
+一次性迁移，不做 backward compat alias（代码量小，99 个测试）：
 
-```python
-# core/models.py
-from shadowcoder.agents.types import ReviewOutput
-ReviewResult = ReviewOutput  # backward compat
-```
+1. 新建 `agents/types.py`，定义所有类型（Output types + ReviewComment + Severity + AgentRequest + AgentUsage + AgentActionFailed）
+2. 更新 `agents/base.py`：新接口，import from types.py
+3. 更新 `agents/claude_code.py`：实现 4 个方法
+4. 更新 `core/models.py`：删除 ReviewResult, ReviewComment, Severity（保留 Issue, IssueStatus 等）
+5. 更新 `core/engine.py`：使用结构化类型 + AgentActionFailed 处理
+6. 更新 `core/issue_store.py`：ReviewOutput 替代 ReviewResult
+7. 更新所有测试：mock 新接口
 
-或者更简洁：直接迁移，一次性更新所有引用。考虑到代码量不大（99 个测试），
-推荐一次性迁移。
+## 测试迁移要点
+
+- 现有测试用 `AsyncMock` mock `agent.execute()` → 改为 mock `agent.design()` / `agent.develop()` 等
+- 返回值从 `AgentResponse(content=..., success=...)` → `DesignOutput(document=...)` 等
+- `ReviewResult(passed=..., comments=...)` → `ReviewOutput(passed=..., comments=...)`
+- `agent.review()` 返回类型名变了但字段相同
 
 ## 改动范围汇总
 
 | 文件 | 改动 |
 |------|------|
-| `agents/types.py` | 新建，定义所有 Output 类型 |
-| `agents/base.py` | 重写接口：4 个 abstract 方法 + 辅助方法 |
-| `agents/claude_code.py` | 适配新接口 |
-| `agents/registry.py` | 无改动 |
-| `core/models.py` | 删除 `ReviewResult`（迁移到 agents/types.py） |
-| `core/engine.py` | 使用结构化类型，删除解析逻辑 |
-| `core/issue_store.py` | `append_review` 参数类型改为 `ReviewOutput` |
-| `tests/` | 更新所有使用 `AgentResponse`/`ReviewResult` 的测试 |
+| `agents/types.py` | **新建**：所有类型定义（Output types, ReviewComment, Severity, AgentRequest, AgentUsage, AgentActionFailed） |
+| `agents/base.py` | **重写**：4 个 abstract 方法 + 辅助方法，删除 AgentResponse/AgentStream |
+| `agents/claude_code.py` | **重写**：实现 design/develop/review/test 4 个方法 |
+| `agents/registry.py` | 无改动（返回 BaseAgent，调用方式变） |
+| `core/models.py` | **删除** ReviewResult, ReviewComment, Severity（迁移到 agents/types.py） |
+| `core/engine.py` | **改动**：使用结构化类型，加 AgentActionFailed 处理，删除解析逻辑 |
+| `core/issue_store.py` | **改动**：append_review 参数改 ReviewOutput，import 路径变 |
+| `tests/` | **全量更新**：mock 新接口，更新 import 和返回类型 |
