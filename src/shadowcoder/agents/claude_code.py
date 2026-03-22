@@ -122,6 +122,11 @@ class ClaudeCodeAgent(BaseAgent):
 
             If there are previous review comments, address each one specifically.
 
+            CRITICAL: You MUST output the COMPLETE design document every time,
+            not just the changes or a supplement. The previous version will be
+            REPLACED entirely by your output. If you only output a patch,
+            the full design will be lost.
+
             Output ONLY the design document in markdown format.
         """)
         prompt = f"{context}\n\nProduce the technical design for this issue."
@@ -142,8 +147,9 @@ class ClaudeCodeAgent(BaseAgent):
             If there are previous review comments or test failures,
             address each one specifically.
 
-            After writing code, provide a summary of what you implemented
-            and what files you created/modified.
+            After writing code, provide a COMPLETE summary of everything
+            implemented so far (not just what changed this round).
+            The previous summary will be REPLACED by your output.
         """)
         prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
         result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
