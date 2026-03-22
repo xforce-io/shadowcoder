@@ -47,7 +47,21 @@ class ShadowCoderApp(App):
         parts = cmd.split()
         match parts:
             case ["create", *title_parts] if title_parts:
-                return Message(MessageType.CMD_CREATE_ISSUE, {"title": " ".join(title_parts)})
+                # Support: create "title" --from path/to/requirements.md
+                title_words = []
+                description = None
+                i = 0
+                while i < len(title_parts):
+                    if title_parts[i] == "--from" and i + 1 < len(title_parts):
+                        description = title_parts[i + 1]
+                        i += 2
+                    else:
+                        title_words.append(title_parts[i])
+                        i += 1
+                payload = {"title": " ".join(title_words)}
+                if description:
+                    payload["description"] = description
+                return Message(MessageType.CMD_CREATE_ISSUE, payload)
             case ["list"]:
                 return Message(MessageType.CMD_LIST, {})
             case ["info", ref]:

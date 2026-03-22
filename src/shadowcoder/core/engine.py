@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from shadowcoder.agents.base import AgentRequest
 from shadowcoder.agents.registry import AgentRegistry
@@ -38,7 +39,12 @@ class Engine:
         title = msg.payload["title"]
         priority = msg.payload.get("priority", "medium")
         tags = msg.payload.get("tags")
-        issue = self.issue_store.create(title, priority=priority, tags=tags)
+        description = msg.payload.get("description")
+        # If description is a file path, read its content
+        if description and Path(description).is_file():
+            description = Path(description).read_text(encoding="utf-8")
+        issue = self.issue_store.create(title, priority=priority, tags=tags,
+                                        description=description)
         await self.bus.publish(Message(MessageType.EVT_ISSUE_CREATED,
             {"issue_id": issue.id, "title": issue.title}))
 

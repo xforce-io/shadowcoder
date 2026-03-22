@@ -26,7 +26,12 @@ class IssueStore:
             return 1
         return max(int(f.stem) for f in existing) + 1
 
-    def create(self, title: str, priority: str = "medium", tags: list[str] | None = None) -> Issue:
+    def create(self, title: str, priority: str = "medium",
+               tags: list[str] | None = None,
+               description: str | None = None) -> Issue:
+        sections: dict[str, str] = {}
+        if description:
+            sections["需求"] = description
         issue = Issue(
             id=self._next_id(),
             title=title,
@@ -35,6 +40,7 @@ class IssueStore:
             created=datetime.now(),
             updated=datetime.now(),
             tags=tags or [],
+            sections=sections,
         )
         self._save(issue)
         return issue
