@@ -73,6 +73,26 @@ assignee: claude-code
 ...
 ```
 
+## Glob 模式更新
+
+现有代码中 `_next_id()` 和 `list_all()` 使用 `self.base.glob("*.md")`。
+引入 `.log.md` 后会导致 `int("0001.log")` 崩溃。
+
+修复：将 glob 改为只匹配 issue 主文件：
+```python
+# 在 IssueStore 中定义
+_ISSUE_GLOB = "[0-9][0-9][0-9][0-9].md"
+
+def _next_id(self) -> int:
+    existing = list(self.base.glob(self._ISSUE_GLOB))
+    ...
+
+def list_all(self) -> list[Issue]:
+    if not self.base.exists():
+        return []
+    return [self.get(int(f.stem)) for f in sorted(self.base.glob(self._ISSUE_GLOB))]
+```
+
 ## 改动
 
 ### IssueStore
@@ -93,13 +113,14 @@ class IssueStore:
 
     def append_review(self, issue_id: int, section: str, review: ReviewOutput) -> None:
         """review 摘要写入 .md，完整内容写入 .log.md"""
-        # .md: 只保留最后一次 review 的摘要
+        # .md: 只保留最后一次 review 的摘要（覆盖写入）
+        # section key 不变（e.g., "Design Review", "Dev Review"），和 engine.py 一致
         summary = f"{'PASSED' if review.passed else 'NOT PASSED'} ({len(review.comments)} comments)"
         issue = self.get(issue_id)
         issue.sections[section] = summary
         self._save(issue)
 
-        # .log.md: 追加完整 review 内容
+        # .log.md: 追加完整 review 内容（使用现有 _format_review，不变）
         formatted = self._format_review(review)
         self.append_log(issue_id, f"{section}\n{formatted}")
 
