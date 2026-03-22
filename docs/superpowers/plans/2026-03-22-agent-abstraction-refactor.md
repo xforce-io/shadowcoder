@@ -622,6 +622,11 @@ class ClaudeCodeAgent(BaseAgent):
         return success, recommendation, passed_count, total_count
 ```
 
+**Notes:**
+- `_run_claude_json` is removed — text mode + `_extract_json` is sufficient. Future `--json-schema` support can be added without needing a separate method.
+- `AgentActionFailed` is not raised by ClaudeCodeAgent yet — `_run_claude` raises `RuntimeError` on CLI failure, which is caught by Engine's generic `except Exception`. `AgentActionFailed` is available for future agent implementations that can distinguish soft vs hard failures.
+- Cross-layer import (`issue_store.py` imports from `agents.types`) is accepted — `ReviewComment`/`ReviewOutput` are data types used across layers, placing them in `agents/types.py` is organizational, not an architectural dependency.
+
 - [ ] **Step 2: Rewrite test_claude_code.py**
 
 ```python
@@ -739,6 +744,7 @@ Rewrite `_run_with_review`:
 async def _run_with_review(self, issue, task, action, review_stage,
                             success_status, section_key, review_section_key):
     max_rounds = self.config.get_max_review_rounds()
+    action_label = action.capitalize()  # defined before try for use in except
     try:
         for round_num in range(1, max_rounds + 1):
             target_status = IssueStatus[action.upper() + "ING"]
@@ -746,7 +752,6 @@ async def _run_with_review(self, issue, task, action, review_stage,
             if issue.status != target_status:
                 self.issue_store.transition_status(issue.id, target_status)
             issue = self.issue_store.get(issue.id)
-            action_label = action.capitalize()
             self._log(issue.id, f"{action_label} R{round_num} 开始")
             await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                 {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
@@ -813,8 +818,102 @@ async def _run_with_review(self, issue, task, action, review_stage,
 
 - [ ] **Step 2: Rewrite _on_test**
 
-Replace the `agent.execute(AgentRequest(action="test", ...))` call with `agent.test(request)`.
-Use `output.success`, `output.recommendation`, `output.passed_count`, `output.total_count` directly.
+Full rewrite — uses `agent.test()` returning `TestOutput`, handles `AgentActionFailed`:
+
+```python
+async def _on_test(self, msg):
+    issue_id = msg.payload["issue_id"]
+    max_retries = self.config.get_max_test_retries()
+
+    for attempt in range(1, max_retries + 1):
+        issue = self.issue_store.get(issue_id)
+        task = await self.task_manager.create(issue, repo_path=self.repo_path,
+            action="test", agent_name=issue.assignee or "default")
+        try:
+            if issue.status != IssueStatus.TESTING:
+                self.issue_store.transition_status(issue.id, IssueStatus.TESTING)
+            issue = self.issue_store.get(issue.id)
+
+            agent = self.agents.get(issue.assignee or "default")
+            request = AgentRequest(action="test", issue=issue,
+                context={"worktree_path": task.worktree_path})
+            output = await agent.test(request)
+            self.issue_store.update_section(issue.id, "测试", output.report)
+
+            if output.success:
+                self.issue_store.transition_status(issue.id, IssueStatus.DONE)
+                self._log(issue.id,
+                    f"Test R{attempt} — PASSED ({output.passed_count}/{output.total_count}) → DONE")
+                task.status = TaskStatus.COMPLETED
+                await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                    {"issue_id": issue.id, "task_id": task.task_id}))
+                return
+
+            # Test failed
+            recommendation = output.recommendation
+            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            self._log(issue.id,
+                f"Test R{attempt} — FAILED ({output.passed_count}/{output.total_count})\n"
+                f"Recommendation: {recommendation or 'none'}")
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+                "issue_id": issue.id, "task_id": task.task_id,
+                "reason": "tests failed",
+                "recommendation": recommendation,
+                "attempt": attempt,
+            }))
+
+            if not recommendation:
+                self._log(issue.id, "无 recommendation，等待人类介入")
+                return
+
+            if attempt >= max_retries:
+                break
+
+            self._log(issue.id,
+                f"自动路由到 {recommendation} (test attempt {attempt}/{max_retries})")
+            route_msg = Message(msg.type, {"issue_id": issue.id})
+            if recommendation == "develop":
+                await self._on_develop(route_msg)
+            elif recommendation == "design":
+                await self._on_design(route_msg)
+                issue = self.issue_store.get(issue_id)
+                if issue.status == IssueStatus.APPROVED:
+                    await self._on_develop(route_msg)
+            else:
+                return
+
+            issue = self.issue_store.get(issue_id)
+            if issue.status != IssueStatus.TESTING:
+                return
+
+        except AgentActionFailed as e:
+            if e.partial_output:
+                self.issue_store.update_section(issue.id, "测试", e.partial_output)
+            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            self._log(issue.id, f"Test 软失败 → FAILED: {e}")
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+            return
+        except Exception as e:
+            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            self._log(issue.id, f"Test 异常 → FAILED: {e}")
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+            return
+
+    # Retries exhausted
+    issue = self.issue_store.get(issue_id)
+    if issue.status == IssueStatus.FAILED:
+        self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+    self._log(issue_id, f"Test 重试耗尽 ({max_retries} 轮) → BLOCKED")
+    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+        "issue_id": issue_id,
+        "reason": f"test failed after {max_retries} retries, awaiting human intervention",
+    }))
+```
 
 - [ ] **Step 3: Update _run_all_reviewers**
 
