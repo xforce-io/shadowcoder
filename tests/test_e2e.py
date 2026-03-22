@@ -439,6 +439,6 @@ async def test_e2e_issue_file_integrity(e2e_system):
     assert post["tags"] == ["e2e"]
 
     # Content checks — should have sections
-    assert "# 设计" in post.content
-    assert "# Design Review" in post.content
+    assert "<!-- section: 设计 -->" in post.content
+    assert "<!-- section: Design Review -->" in post.content
     assert "Architecture" in post.content

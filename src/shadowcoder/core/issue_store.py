@@ -136,31 +136,30 @@ class IssueStore:
             lines.append(f"- [{c.severity.value.upper()}]{loc} {c.message}")
         return "\n".join(lines)
 
-    @staticmethod
-    def _sections_to_markdown(sections: dict[str, str]) -> str:
+    _SECTION_PREFIX = "<!-- section: "
+    _SECTION_SUFFIX = " -->"
+
+    @classmethod
+    def _sections_to_markdown(cls, sections: dict[str, str]) -> str:
         if not sections:
             return ""
-        # Use H1 (#) as top-level section delimiter so agent output
-        # with H2 (##) headers won't be misinterpreted as section boundaries.
-        return "\n\n".join(f"# {k}\n{v}" for k, v in sections.items())
+        # Use HTML comments as section delimiters — they won't conflict
+        # with any markdown content the agent produces.
+        parts = []
+        for k, v in sections.items():
+            parts.append(f"{cls._SECTION_PREFIX}{k}{cls._SECTION_SUFFIX}\n{v}")
+        return "\n\n".join(parts)
 
-    @staticmethod
-    def _markdown_to_sections(content: str) -> dict[str, str]:
+    @classmethod
+    def _markdown_to_sections(cls, content: str) -> dict[str, str]:
         sections: dict[str, str] = {}
         current_key: str | None = None
         lines: list[str] = []
-        in_code_block = False
         for line in content.split("\n"):
-            # Track fenced code blocks — don't parse headers inside them
-            if line.startswith("```"):
-                in_code_block = not in_code_block
-            # Only H1 headers (# ) outside code blocks are section delimiters
-            if (not in_code_block
-                    and line.startswith("# ")
-                    and not line.startswith("## ")):
+            if line.startswith(cls._SECTION_PREFIX) and line.endswith(cls._SECTION_SUFFIX):
                 if current_key:
                     sections[current_key] = "\n".join(lines).strip()
-                current_key = line[2:].strip()
+                current_key = line[len(cls._SECTION_PREFIX):-len(cls._SECTION_SUFFIX)]
                 lines = []
             else:
                 lines.append(line)

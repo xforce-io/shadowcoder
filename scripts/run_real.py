@@ -1,0 +1,118 @@
+"""
+Run shadowcoder against a real repo with the real Claude agent.
+Usage: python scripts/run_real.py <repo_path> <command> [args]
+
+Examples:
+  python scripts/run_real.py ~/lab/coder-playground create "SQL Database Engine" --from requirements.md
+  python scripts/run_real.py ~/lab/coder-playground design 1
+  python scripts/run_real.py ~/lab/coder-playground develop 1
+  python scripts/run_real.py ~/lab/coder-playground test 1
+  python scripts/run_real.py ~/lab/coder-playground info 1
+  python scripts/run_real.py ~/lab/coder-playground list
+"""
+import asyncio
+import sys
+from pathlib import Path
+
+import shadowcoder.agents  # trigger registration
+
+from shadowcoder.core.bus import Message, MessageBus, MessageType
+from shadowcoder.core.config import Config
+from shadowcoder.core.engine import Engine
+from shadowcoder.core.issue_store import IssueStore
+from shadowcoder.core.task_manager import TaskManager
+from shadowcoder.core.worktree import WorktreeManager
+from shadowcoder.agents.registry import AgentRegistry
+
+
+async def main():
+    if len(sys.argv) < 3:
+        print(__doc__)
+        sys.exit(1)
+
+    repo_path = str(Path(sys.argv[1]).resolve())
+    command = sys.argv[2]
+    args = sys.argv[3:]
+
+    config = Config()
+    bus = MessageBus()
+    wt_manager = WorktreeManager(config.get_worktree_dir())
+    task_manager = TaskManager(wt_manager)
+    issue_store = IssueStore(repo_path, config)
+    registry = AgentRegistry(config)
+    engine = Engine(bus, issue_store, task_manager, registry, config, repo_path)
+
+    # Subscribe to all events for logging
+    async def log_event(msg):
+        print(f"[EVENT] {msg.type.value}: {msg.payload}")
+
+    for mt in MessageType:
+        if mt.value.startswith("evt."):
+            bus.subscribe(mt, log_event)
+
+    # Dispatch command
+    if command == "create":
+        title_parts = []
+        description = None
+        i = 0
+        while i < len(args):
+            if args[i] == "--from" and i + 1 < len(args):
+                desc_path = Path(repo_path) / args[i + 1]
+                if not desc_path.exists():
+                    desc_path = Path(args[i + 1])
+                description = str(desc_path)
+                i += 2
+            else:
+                title_parts.append(args[i])
+                i += 1
+        payload = {"title": " ".join(title_parts)}
+        if description:
+            payload["description"] = description
+        await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, payload))
+
+    elif command == "design":
+        await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": int(args[0])}))
+
+    elif command == "develop":
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": int(args[0])}))
+
+    elif command == "test":
+        await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": int(args[0])}))
+
+    elif command == "info":
+        await bus.publish(Message(MessageType.CMD_INFO, {"issue_id": int(args[0])}))
+
+    elif command == "list":
+        await bus.publish(Message(MessageType.CMD_LIST, {}))
+
+    elif command == "approve":
+        await bus.publish(Message(MessageType.CMD_APPROVE, {"issue_id": int(args[0])}))
+
+    elif command == "resume":
+        await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": int(args[0])}))
+
+    elif command == "cancel":
+        await bus.publish(Message(MessageType.CMD_CANCEL, {"issue_id": int(args[0])}))
+
+    else:
+        print(f"Unknown command: {command}")
+        sys.exit(1)
+
+    # Print final issue state
+    if command in ("create", "design", "develop", "test", "approve", "resume"):
+        try:
+            issues = issue_store.list_all()
+            if issues:
+                latest = issues[-1] if command == "create" else issue_store.get(int(args[0]))
+                print(f"\n=== Issue #{latest.id}: {latest.title} ===")
+                print(f"Status: {latest.status.value}")
+                print(f"Sections: {list(latest.sections.keys())}")
+                if "航海日志" in latest.sections:
+                    print(f"\n--- 航海日志 ---")
+                    print(latest.sections["航海日志"])
+        except Exception as e:
+            print(f"Could not read issue: {e}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
