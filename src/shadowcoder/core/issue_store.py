@@ -16,14 +16,19 @@ from shadowcoder.agents.types import ReviewComment, ReviewOutput, Severity
 
 
 class IssueStore:
+    _ISSUE_GLOB = "[0-9][0-9][0-9][0-9].md"
+
     def __init__(self, repo_path: str, config: Config):
         self.base = Path(repo_path) / config.get_issue_dir()
 
     def _next_id(self) -> int:
-        existing = list(self.base.glob("*.md"))
+        existing = list(self.base.glob(self._ISSUE_GLOB))
         if not existing:
             return 1
         return max(int(f.stem) for f in existing) + 1
+
+    def _log_path(self, issue_id: int) -> Path:
+        return self.base / f"{issue_id:04d}.log.md"
 
     def create(self, title: str, priority: str = "medium",
                tags: list[str] | None = None,
@@ -64,7 +69,7 @@ class IssueStore:
     def list_all(self) -> list[Issue]:
         if not self.base.exists():
             return []
-        return [self.get(int(f.stem)) for f in sorted(self.base.glob("*.md"))]
+        return [self.get(int(f.stem)) for f in sorted(self.base.glob(self._ISSUE_GLOB))]
 
     def list_by_status(self, status: IssueStatus) -> list[Issue]:
         return [i for i in self.list_all() if i.status == status]
@@ -85,26 +90,29 @@ class IssueStore:
         self._save(issue)
 
     def append_review(self, issue_id: int, section: str, review: ReviewOutput) -> None:
-        formatted = self._format_review(review)
+        # .md: only latest review summary (overwrite)
+        summary = f"{'PASSED' if review.passed else 'NOT PASSED'} ({len(review.comments)} comments)"
         issue = self.get(issue_id)
-        existing = issue.sections.get(section, "")
-        if existing:
-            issue.sections[section] = existing + "\n\n" + formatted
-        else:
-            issue.sections[section] = formatted
+        issue.sections[section] = summary
         self._save(issue)
 
+        # .log.md: full review content (append)
+        formatted = self._format_review(review)
+        self.append_log(issue_id, f"{section}\n{formatted}")
+
     def append_log(self, issue_id: int, entry: str) -> None:
-        """Append a timestamped entry to the 航海日志 section."""
+        path = self._log_path(issue_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"## [{ts}] {entry}"
-        issue = self.get(issue_id)
-        existing = issue.sections.get("航海日志", "")
-        if existing:
-            issue.sections["航海日志"] = existing + "\n\n" + log_entry
-        else:
-            issue.sections["航海日志"] = log_entry
-        self._save(issue)
+        log_entry = f"\n\n## [{ts}] {entry}"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(log_entry)
+
+    def get_log(self, issue_id: int) -> str:
+        path = self._log_path(issue_id)
+        if not path.exists():
+            return ""
+        return path.read_text(encoding="utf-8")
 
     def assign(self, issue_id: int, agent_name: str) -> None:
         issue = self.get(issue_id)

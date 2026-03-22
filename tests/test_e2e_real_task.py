@@ -616,15 +616,18 @@ async def test_real_task_full_lifecycle(system):
     assert "Exit Codes" in design_content, \
         "Design v2 should include exit codes"
 
-    # -- Verify review section has BOTH rounds (accumulated) --
+    # -- Verify review section has summary (latest round only) --
     review_content = issue.sections["Design Review"]
-    assert "NOT PASSED" in review_content, \
-        "Should contain first round rejection"
     assert "PASSED" in review_content, \
-        "Should contain second round approval"
-    assert "Missing error handling" in review_content, \
-        "Should contain specific feedback from round 1"
-    assert "design-reviewer" in review_content
+        "Should contain approval summary"
+
+    # -- Verify log has BOTH rounds (accumulated) --
+    log = store.get_log(1)
+    assert "NOT PASSED" in log, \
+        "Log should contain first round rejection"
+    assert "Missing error handling" in log, \
+        "Log should contain specific feedback from round 1"
+    assert "design-reviewer" in log
 
     # -- Verify code blocks survived roundtrip --
     assert "```bash" in design_content or "```" in design_content, \
@@ -669,13 +672,16 @@ async def test_real_task_full_lifecycle(system):
     assert "async def check_url" not in develop_content, \
         "Develop v1 standalone function should be overwritten by v2 class"
 
-    # -- Verify dev review has both rounds --
+    # -- Verify dev review summary is in .md --
     dev_review = issue.sections["Dev Review"]
-    assert "NOT PASSED" in dev_review
     assert "PASSED" in dev_review
-    assert "ClientSession per URL" in dev_review, \
-        "Should contain specific v1 feedback"
-    assert "code-reviewer" in dev_review
+
+    # -- Verify dev review details are in log --
+    log = store.get_log(1)
+    assert "NOT PASSED" in log
+    assert "ClientSession per URL" in log, \
+        "Log should contain specific v1 feedback"
+    assert "code-reviewer" in log
 
     # ===== TEST =====
     await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
@@ -692,10 +698,14 @@ async def test_real_task_full_lifecycle(system):
 
     # ===== FINAL VERIFICATION =====
 
-    # -- All sections present --
-    expected_sections = {"设计", "Design Review", "开发步骤", "Dev Review", "测试", "航海日志"}
+    # -- All sections present (航海日志 is now in .log.md, not .md) --
+    expected_sections = {"设计", "Design Review", "开发步骤", "Dev Review", "测试"}
     assert expected_sections == set(issue.sections.keys()), \
         f"Missing sections: {expected_sections - set(issue.sections.keys())}"
+
+    # -- Log file has content --
+    log = store.get_log(1)
+    assert len(log) > 0
 
     # -- Final file on disk is correct --
     post = fm.load(str(issue_file))

@@ -309,10 +309,14 @@ async def test_e2e_design_review_retry(e2e_system):
     assert not review_events[1].payload["passed"]
     assert review_events[2].payload["passed"]
 
-    # Design Review section should contain all review results
+    # Design Review section has the latest summary only
     review_content = issue.sections.get("Design Review", "")
-    assert "needs improvement" in review_content
     assert "PASSED" in review_content
+
+    # Log file contains full history (all rounds)
+    log = store.get_log(1)
+    assert "needs improvement" in log
+    assert "NOT PASSED" in log
 
 
 async def test_e2e_review_exhaustion_and_approve(e2e_system):

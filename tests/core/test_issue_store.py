@@ -111,9 +111,73 @@ def test_append_review(store):
     store.append_review(1, "Design Review", review)
     issue = store.get(1)
     content = issue.sections["Design Review"]
-    assert "claude-code" in content
-    assert "Fix this" in content
-    assert "HIGH" in content.upper() or "high" in content
+    # After the split: .md only has summary, not full review details
+    assert "NOT PASSED" in content
+    assert "2 comments" in content
+
+
+def test_append_log_creates_file(store):
+    store.create("Test")
+    store.append_log(1, "Design R1 开始")
+    log = store.get_log(1)
+    assert "Design R1 开始" in log
+    # Main issue file should NOT have 航海日志 section
+    issue = store.get(1)
+    assert "航海日志" not in issue.sections
+
+
+def test_append_log_accumulates(store):
+    store.create("Test")
+    store.append_log(1, "Entry 1")
+    store.append_log(1, "Entry 2")
+    log = store.get_log(1)
+    assert "Entry 1" in log
+    assert "Entry 2" in log
+
+
+def test_get_log_nonexistent(store):
+    store.create("Test")
+    assert store.get_log(1) == ""
+
+
+def test_append_review_splits(store):
+    from shadowcoder.agents.types import ReviewOutput, ReviewComment, Severity
+    store.create("Test")
+    review = ReviewOutput(
+        passed=False,
+        comments=[
+            ReviewComment(severity=Severity.HIGH, message="Fix this"),
+            ReviewComment(severity=Severity.LOW, message="Nit"),
+        ],
+        reviewer="claude-code",
+    )
+    store.append_review(1, "Design Review", review)
+
+    # .md has summary only
+    issue = store.get(1)
+    assert "NOT PASSED" in issue.sections["Design Review"]
+    assert "2 comments" in issue.sections["Design Review"]
+    # Full review content should NOT be in .md
+    assert "Fix this" not in issue.sections["Design Review"]
+
+    # .log.md has full content
+    log = store.get_log(1)
+    assert "Fix this" in log
+    assert "claude-code" in log
+
+
+def test_list_all_ignores_log_files(store):
+    store.create("A")
+    store.append_log(1, "some log")
+    issues = store.list_all()
+    assert len(issues) == 1  # should not count .log.md as an issue
+
+
+def test_next_id_ignores_log_files(store):
+    store.create("A")
+    store.append_log(1, "some log")
+    store.create("B")
+    assert store.get(2).title == "B"  # should be ID 2, not crash
 
 
 def test_assign(store):

@@ -107,9 +107,10 @@ async def main():
                 print(f"\n=== Issue #{latest.id}: {latest.title} ===")
                 print(f"Status: {latest.status.value}")
                 print(f"Sections: {list(latest.sections.keys())}")
-                if "航海日志" in latest.sections:
+                log = issue_store.get_log(latest.id)
+                if log:
                     print(f"\n--- 航海日志 ---")
-                    print(latest.sections["航海日志"])
+                    print(log)
         except Exception as e:
             print(f"Could not read issue: {e}")
 
