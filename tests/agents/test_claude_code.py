@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from shadowcoder.agents.claude_code import ClaudeCodeAgent
-from shadowcoder.agents.base import AgentRequest
-from shadowcoder.core.models import Issue, IssueStatus, ReviewResult
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput
+from shadowcoder.core.models import Issue, IssueStatus
 from datetime import datetime
 
 
@@ -20,19 +20,27 @@ def sample_request():
     return AgentRequest(action="design", issue=issue, context={"worktree_path": "/tmp"})
 
 
-async def test_execute_returns_response(agent, sample_request):
+async def test_design_returns_output(agent, sample_request):
     agent._run_claude = AsyncMock(return_value="Design document content here")
-    resp = await agent.execute(sample_request)
-    assert resp.success is True
-    assert isinstance(resp.content, str)
-    assert len(resp.content) > 0
+    result = await agent.design(sample_request)
+    assert isinstance(result, DesignOutput)
+    assert len(result.document) > 0
+
+
+async def test_develop_returns_output(agent, sample_request):
+    sample_request.action = "develop"
+    agent._run_claude = AsyncMock(return_value="Implementation summary here")
+    agent._get_files_changed = AsyncMock(return_value=[])
+    result = await agent.develop(sample_request)
+    assert isinstance(result, DevelopOutput)
+    assert len(result.summary) > 0
 
 
 async def test_review_returns_result(agent, sample_request):
     sample_request.action = "review"
     agent._run_claude = AsyncMock(return_value='{"passed": true, "comments": []}')
     result = await agent.review(sample_request)
-    assert isinstance(result, ReviewResult)
+    assert isinstance(result, ReviewOutput)
     assert result.passed is True
     assert result.reviewer == "claude-code"
 
@@ -57,23 +65,26 @@ async def test_review_unparseable_json(agent, sample_request):
 async def test_test_pass(agent, sample_request):
     sample_request.action = "test"
     agent._run_claude = AsyncMock(return_value="All tests passed\nRESULT: PASS")
-    resp = await agent.execute(sample_request)
-    assert resp.success is True
+    result = await agent.test(sample_request)
+    assert isinstance(result, TestOutput)
+    assert result.success is True
 
 
 async def test_test_fail_with_recommendation(agent, sample_request):
     sample_request.action = "test"
     agent._run_claude = AsyncMock(
         return_value="3 tests failed\nRESULT: FAIL recommendation=develop")
-    resp = await agent.execute(sample_request)
-    assert resp.success is False
-    assert resp.metadata["recommendation"] == "develop"
+    result = await agent.test(sample_request)
+    assert isinstance(result, TestOutput)
+    assert result.success is False
+    assert result.recommendation == "develop"
 
 
 async def test_test_fail_design_recommendation(agent, sample_request):
     sample_request.action = "test"
     agent._run_claude = AsyncMock(
         return_value="Missing feature\nRESULT: FAIL recommendation=design")
-    resp = await agent.execute(sample_request)
-    assert resp.success is False
-    assert resp.metadata["recommendation"] == "design"
+    result = await agent.test(sample_request)
+    assert isinstance(result, TestOutput)
+    assert result.success is False
+    assert result.recommendation == "design"

@@ -10,13 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from shadowcoder.agents.base import AgentRequest, AgentResponse, BaseAgent
+from shadowcoder.agents.base import BaseAgent
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
 from shadowcoder.core.engine import Engine
 from shadowcoder.core.issue_store import IssueStore
-from shadowcoder.core.models import IssueStatus, ReviewResult, ReviewComment, Severity, TaskStatus
+from shadowcoder.core.models import IssueStatus, TaskStatus
 from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.worktree import WorktreeManager
 
@@ -28,7 +29,7 @@ class E2EAgent(BaseAgent):
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self.execute_calls: list[AgentRequest] = []
+        self.execute_calls: list[AgentRequest] = []  # tracks design/develop/test calls
         self.review_calls: list[AgentRequest] = []
         self._review_fail_count = 0  # how many review calls should fail before passing
         self._review_call_counter = 0
@@ -38,10 +39,9 @@ class E2EAgent(BaseAgent):
         self._review_fail_count = n
         self._review_call_counter = 0
 
-    async def execute(self, request: AgentRequest) -> AgentResponse:
+    async def design(self, request: AgentRequest) -> DesignOutput:
         self.execute_calls.append(request)
-        if request.action == "design":
-            content = f"""## Architecture
+        document = """## Architecture
 A simple calculator module with add, subtract, multiply, divide functions.
 
 ## API
@@ -52,16 +52,22 @@ A simple calculator module with add, subtract, multiply, divide functions.
 
 ## Testing Strategy
 Unit tests for each function including edge cases."""
-        elif request.action == "develop":
-            content = f"""## Implementation
+        return DesignOutput(document=document)
+
+    async def develop(self, request: AgentRequest) -> DevelopOutput:
+        self.execute_calls.append(request)
+        summary = """## Implementation
 Created `calc.py` with four arithmetic functions.
 Created `test_calc.py` with 8 test cases.
 
 ### Files Changed
 - `calc.py` (new)
 - `test_calc.py` (new)"""
-        elif request.action == "test":
-            content = """## Test Results
+        return DevelopOutput(summary=summary)
+
+    async def test(self, request: AgentRequest) -> TestOutput:
+        self.execute_calls.append(request)
+        report = """## Test Results
 ```
 test_add .................. PASSED
 test_subtract ............. PASSED
@@ -73,19 +79,14 @@ test_multiply_zero ........ PASSED
 test_subtract_self ........ PASSED
 ```
 8/8 tests passed."""
-        else:
-            content = f"[e2e-agent] {request.action} output"
-        return AgentResponse(content=content, success=True)
+        return TestOutput(report=report, success=True, passed_count=8, total_count=8)
 
-    async def stream(self, request):
-        raise NotImplementedError
-
-    async def review(self, request: AgentRequest) -> ReviewResult:
+    async def review(self, request: AgentRequest) -> ReviewOutput:
         self.review_calls.append(request)
         self._review_call_counter += 1
 
         if self._review_call_counter <= self._review_fail_count:
-            return ReviewResult(
+            return ReviewOutput(
                 passed=False,
                 comments=[
                     ReviewComment(
@@ -95,7 +96,7 @@ test_subtract_self ........ PASSED
                 ],
                 reviewer="e2e-reviewer",
             )
-        return ReviewResult(
+        return ReviewOutput(
             passed=True,
             comments=[
                 ReviewComment(

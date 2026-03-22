@@ -5,8 +5,8 @@ from shadowcoder.core.config import Config
 from shadowcoder.core.engine import Engine
 from shadowcoder.core.issue_store import IssueStore
 from shadowcoder.core.task_manager import TaskManager
-from shadowcoder.core.models import IssueStatus, ReviewResult
-from shadowcoder.agents.base import AgentResponse
+from shadowcoder.core.models import IssueStatus
+from shadowcoder.agents.types import DesignOutput, DevelopOutput, ReviewOutput, TestOutput
 from shadowcoder.agents.registry import AgentRegistry
 
 
@@ -15,8 +15,10 @@ async def test_full_lifecycle(tmp_repo, tmp_config):
     config = Config(str(tmp_config))
 
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="output", success=True))
-    agent.review = AsyncMock(return_value=ReviewResult(passed=True, comments=[], reviewer="mock"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
+    agent.test = AsyncMock(return_value=TestOutput(report="output", success=True))
+    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, comments=[], reviewer="mock"))
 
     AgentRegistry.register("claude_code", lambda cfg: agent)
     registry = AgentRegistry(config)

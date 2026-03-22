@@ -15,15 +15,14 @@ from pathlib import Path
 import frontmatter as fm
 import pytest
 
-from shadowcoder.agents.base import AgentRequest, AgentResponse, BaseAgent
+from shadowcoder.agents.base import BaseAgent
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
 from shadowcoder.core.engine import Engine
 from shadowcoder.core.issue_store import IssueStore
-from shadowcoder.core.models import (
-    IssueStatus, ReviewComment, ReviewResult, Severity,
-)
+from shadowcoder.core.models import IssueStatus
 from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.worktree import WorktreeManager
 
@@ -704,20 +703,24 @@ class StateDrivenAgent(BaseAgent):
                             changed = True
         return resolved
 
-    async def execute(self, request: AgentRequest) -> AgentResponse:
+    async def design(self, request: AgentRequest) -> DesignOutput:
         self.execute_log.append(request.action)
         issue = request.issue
         requirements = issue.sections.get("需求", "")
+        return self._do_design(issue, requirements)
 
-        if request.action == "design":
-            return self._do_design(issue, requirements)
-        elif request.action == "develop":
-            return self._do_develop(issue, requirements)
-        elif request.action == "test":
-            return self._do_test(issue)
-        return AgentResponse(content=f"[{request.action}]", success=True)
+    async def develop(self, request: AgentRequest) -> DevelopOutput:
+        self.execute_log.append(request.action)
+        issue = request.issue
+        requirements = issue.sections.get("需求", "")
+        return self._do_develop(issue, requirements)
 
-    def _do_design(self, issue, requirements):
+    async def test(self, request: AgentRequest) -> TestOutput:
+        self.execute_log.append(request.action)
+        issue = request.issue
+        return self._do_test(issue)
+
+    def _do_design(self, issue, requirements) -> DesignOutput:
         """Produce design based on current state.
         Can only add limited new features per round."""
         existing_design = issue.sections.get("设计", "")
@@ -752,10 +755,9 @@ class StateDrivenAgent(BaseAgent):
                 sections.append(DESIGN_FEATURES[fname]["content"])
 
         content = "\n\n".join(sections)
-        return AgentResponse(content=content, success=True,
-                             metadata={"included_features": sorted(target)})
+        return DesignOutput(document=content)
 
-    def _do_develop(self, issue, requirements):
+    def _do_develop(self, issue, requirements) -> DevelopOutput:
         """Produce implementation based on design and review feedback.
         Can only add limited new features per round.
         Only implements features that are in the design."""
@@ -795,10 +797,9 @@ class StateDrivenAgent(BaseAgent):
                 sections.append(DEVELOP_FEATURES[fname])
 
         content = "\n\n".join(sections)
-        return AgentResponse(content=content, success=True,
-                             metadata={"implemented_features": sorted(target)})
+        return DevelopOutput(summary=content)
 
-    def _do_test(self, issue):
+    def _do_test(self, issue) -> TestOutput:
         """Run benchmarks against implementation. Check which pass."""
         impl = issue.sections.get("开发步骤", "")
         implemented = self._included_features(impl)
@@ -849,20 +850,17 @@ class StateDrivenAgent(BaseAgent):
                 recommendation = "develop"
 
             content = "\n".join(lines)
-            return AgentResponse(content=content, success=False,
-                                 metadata={"recommendation": recommendation,
-                                           "passed": pass_count, "total": total})
+            return TestOutput(report=content, success=False,
+                              recommendation=recommendation,
+                              passed_count=pass_count, total_count=total)
 
         # All passed
         lines.append("\n## All benchmarks passed!")
         content = "\n".join(lines)
-        return AgentResponse(content=content, success=True,
-                             metadata={"passed": total, "total": total})
+        return TestOutput(report=content, success=True,
+                          passed_count=total, total_count=total)
 
-    async def stream(self, request):
-        raise NotImplementedError
-
-    async def review(self, request: AgentRequest) -> ReviewResult:
+    async def review(self, request: AgentRequest) -> ReviewOutput:
         """Review: check content against requirements."""
         self.review_log.append(request.action)
         issue = request.issue
@@ -891,10 +889,10 @@ class StateDrivenAgent(BaseAgent):
                             f"Requirements mention keywords: "
                             f"{DESIGN_FEATURES.get(feat, {}).get('required_keywords', [feat])}",
                 ))
-            return ReviewResult(passed=False, comments=comments,
+            return ReviewOutput(passed=False, comments=comments,
                                 reviewer=f"{phase}-reviewer")
 
-        return ReviewResult(
+        return ReviewOutput(
             passed=True,
             comments=[ReviewComment(
                 severity=Severity.LOW,

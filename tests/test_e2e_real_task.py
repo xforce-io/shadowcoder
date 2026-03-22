@@ -17,15 +17,14 @@ from pathlib import Path
 import frontmatter as fm
 import pytest
 
-from shadowcoder.agents.base import AgentRequest, AgentResponse, BaseAgent
+from shadowcoder.agents.base import BaseAgent
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
 from shadowcoder.core.engine import Engine
 from shadowcoder.core.issue_store import IssueStore
-from shadowcoder.core.models import (
-    IssueStatus, ReviewComment, ReviewResult, Severity,
-)
+from shadowcoder.core.models import IssueStatus
 from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.worktree import WorktreeManager
 
@@ -349,7 +348,7 @@ tests/test_cli.py::test_cli_exit_code_1 ................... PASSED
 18/18 tests passed, 92% code coverage. All error handling paths tested."""
 
 
-REVIEW_DESIGN_REJECT = ReviewResult(
+REVIEW_DESIGN_REJECT = ReviewOutput(
     passed=False,
     comments=[
         ReviewComment(
@@ -381,7 +380,7 @@ REVIEW_DESIGN_REJECT = ReviewResult(
     reviewer="design-reviewer",
 )
 
-REVIEW_DESIGN_APPROVE = ReviewResult(
+REVIEW_DESIGN_APPROVE = ReviewOutput(
     passed=True,
     comments=[
         ReviewComment(
@@ -397,7 +396,7 @@ REVIEW_DESIGN_APPROVE = ReviewResult(
     reviewer="design-reviewer",
 )
 
-REVIEW_DEVELOP_REJECT = ReviewResult(
+REVIEW_DEVELOP_REJECT = ReviewOutput(
     passed=False,
     comments=[
         ReviewComment(
@@ -423,7 +422,7 @@ REVIEW_DEVELOP_REJECT = ReviewResult(
     reviewer="code-reviewer",
 )
 
-REVIEW_DEVELOP_APPROVE = ReviewResult(
+REVIEW_DEVELOP_APPROVE = ReviewOutput(
     passed=True,
     comments=[
         ReviewComment(
@@ -451,25 +450,20 @@ class RealisticAgent(BaseAgent):
         self._review_design_round = 0
         self._review_develop_round = 0
 
-    async def execute(self, request: AgentRequest) -> AgentResponse:
-        if request.action == "design":
-            self._design_round += 1
-            content = DESIGN_V1 if self._design_round == 1 else DESIGN_V2
-            return AgentResponse(content=content, success=True,
-                                 metadata={"round": self._design_round})
-        elif request.action == "develop":
-            self._develop_round += 1
-            content = DEVELOP_V1 if self._develop_round == 1 else DEVELOP_V2
-            return AgentResponse(content=content, success=True,
-                                 metadata={"round": self._develop_round})
-        elif request.action == "test":
-            return AgentResponse(content=TEST_RESULTS, success=True)
-        return AgentResponse(content=f"[{request.action}]", success=True)
+    async def design(self, request: AgentRequest) -> DesignOutput:
+        self._design_round += 1
+        document = DESIGN_V1 if self._design_round == 1 else DESIGN_V2
+        return DesignOutput(document=document)
 
-    async def stream(self, request):
-        raise NotImplementedError
+    async def develop(self, request: AgentRequest) -> DevelopOutput:
+        self._develop_round += 1
+        summary = DEVELOP_V1 if self._develop_round == 1 else DEVELOP_V2
+        return DevelopOutput(summary=summary)
 
-    async def review(self, request: AgentRequest) -> ReviewResult:
+    async def test(self, request: AgentRequest) -> TestOutput:
+        return TestOutput(report=TEST_RESULTS, success=True, passed_count=18, total_count=18)
+
+    async def review(self, request: AgentRequest) -> ReviewOutput:
         # Infer which stage we're reviewing from issue sections
         sections = request.issue.sections
         if "开发步骤" in sections:
