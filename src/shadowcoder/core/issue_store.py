@@ -122,7 +122,9 @@ class IssueStore:
     def _sections_to_markdown(sections: dict[str, str]) -> str:
         if not sections:
             return ""
-        return "\n\n".join(f"## {k}\n{v}" for k, v in sections.items())
+        # Use H1 (#) as top-level section delimiter so agent output
+        # with H2 (##) headers won't be misinterpreted as section boundaries.
+        return "\n\n".join(f"# {k}\n{v}" for k, v in sections.items())
 
     @staticmethod
     def _markdown_to_sections(content: str) -> dict[str, str]:
@@ -130,10 +132,11 @@ class IssueStore:
         current_key: str | None = None
         lines: list[str] = []
         for line in content.split("\n"):
-            if line.startswith("## "):
+            # Only H1 headers (# ) are section delimiters, not ## or ###
+            if line.startswith("# ") and not line.startswith("## "):
                 if current_key:
                     sections[current_key] = "\n".join(lines).strip()
-                current_key = line[3:].strip()
+                current_key = line[2:].strip()
                 lines = []
             else:
                 lines.append(line)

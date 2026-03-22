@@ -23,7 +23,14 @@ class WorktreeManager:
     async def create(self, repo_path: str, issue_id: int) -> str:
         branch = f"shadowcoder/issue-{issue_id}"
         wt_path = str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
-        await self._run_git(repo_path, "worktree", "add", "-b", branch, wt_path)
+        # If worktree already exists (e.g., resume from BLOCKED), reuse it
+        if Path(wt_path).exists():
+            return wt_path
+        # Try creating with new branch; if branch exists, use existing branch
+        try:
+            await self._run_git(repo_path, "worktree", "add", "-b", branch, wt_path)
+        except RuntimeError:
+            await self._run_git(repo_path, "worktree", "add", wt_path, branch)
         return wt_path
 
     async def remove(self, repo_path: str, issue_id: int) -> None:

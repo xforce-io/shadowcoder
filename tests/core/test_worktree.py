@@ -38,7 +38,8 @@ async def test_list_worktrees(tmp_repo, wt_manager):
     assert len(wts) >= 2
 
 
-async def test_create_duplicate_fails(tmp_repo, wt_manager):
-    await wt_manager.create(str(tmp_repo), 1)
-    with pytest.raises(RuntimeError):
-        await wt_manager.create(str(tmp_repo), 1)
+async def test_create_duplicate_reuses(tmp_repo, wt_manager):
+    """Creating a worktree for the same issue twice returns the same path (reuse)."""
+    wt_path1 = await wt_manager.create(str(tmp_repo), 1)
+    wt_path2 = await wt_manager.create(str(tmp_repo), 1)
+    assert wt_path1 == wt_path2
