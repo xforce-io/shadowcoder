@@ -1,19 +1,22 @@
 import pytest
-from shadowcoder.agents.base import BaseAgent, AgentRequest, AgentResponse, AgentStream
+from shadowcoder.agents.base import BaseAgent
+from shadowcoder.agents.types import DesignOutput, DevelopOutput, ReviewOutput, TestOutput
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.config import Config
-from shadowcoder.core.models import ReviewResult
 
 
 class FakeAgent(BaseAgent):
-    async def execute(self, request):
-        return AgentResponse(content="ok", success=True)
+    async def design(self, request):
+        return DesignOutput(document="ok")
 
-    async def stream(self, request):
-        raise NotImplementedError
+    async def develop(self, request):
+        return DevelopOutput(summary="ok")
 
     async def review(self, request):
-        return ReviewResult(passed=True, comments=[], reviewer="fake")
+        return ReviewOutput(passed=True, reviewer="fake")
+
+    async def test(self, request):
+        return TestOutput(report="ok", success=True)
 
 
 def test_register_and_get(tmp_config):

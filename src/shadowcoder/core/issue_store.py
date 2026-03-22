@@ -10,10 +10,9 @@ from shadowcoder.core.models import (
     InvalidTransitionError,
     Issue,
     IssueStatus,
-    ReviewResult,
-    Severity,
     VALID_TRANSITIONS,
 )
+from shadowcoder.agents.types import ReviewComment, ReviewOutput, Severity
 
 
 class IssueStore:
@@ -85,7 +84,7 @@ class IssueStore:
         issue.sections[section] = content
         self._save(issue)
 
-    def append_review(self, issue_id: int, section: str, review: ReviewResult) -> None:
+    def append_review(self, issue_id: int, section: str, review: ReviewOutput) -> None:
         formatted = self._format_review(review)
         issue = self.get(issue_id)
         existing = issue.sections.get(section, "")
@@ -129,7 +128,7 @@ class IssueStore:
         path.write_text(frontmatter.dumps(post), encoding="utf-8")
 
     @staticmethod
-    def _format_review(review: ReviewResult) -> str:
+    def _format_review(review: ReviewOutput) -> str:
         lines = [f"**Reviewer: {review.reviewer}** — {'PASSED' if review.passed else 'NOT PASSED'}"]
         for c in review.comments:
             loc = f" ({c.location})" if c.location else ""

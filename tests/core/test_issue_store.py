@@ -1,9 +1,7 @@
 import pytest
 from shadowcoder.core.issue_store import IssueStore
-from shadowcoder.core.models import (
-    IssueStatus, InvalidTransitionError, Severity,
-    ReviewComment, ReviewResult,
-)
+from shadowcoder.core.models import IssueStatus, InvalidTransitionError
+from shadowcoder.agents.types import Severity, ReviewComment, ReviewOutput
 from shadowcoder.core.config import Config
 
 
@@ -102,7 +100,7 @@ def test_update_section_overwrites(store):
 
 def test_append_review(store):
     store.create("Test")
-    review = ReviewResult(
+    review = ReviewOutput(
         passed=False,
         comments=[
             ReviewComment(severity=Severity.HIGH, message="Fix this"),

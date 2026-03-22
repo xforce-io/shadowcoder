@@ -5,8 +5,11 @@ import json
 import logging
 from textwrap import dedent
 
-from shadowcoder.agents.base import AgentRequest, AgentResponse, AgentStream, BaseAgent
-from shadowcoder.core.models import ReviewComment, ReviewResult, Severity
+from shadowcoder.agents.base import BaseAgent
+from shadowcoder.agents.types import (
+    AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    ReviewComment, Severity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,33 +59,6 @@ class ClaudeCodeAgent(BaseAgent):
 
         return stdout.decode("utf-8")
 
-    async def _run_claude_json(self, prompt: str, cwd: str | None = None,
-                               system_prompt: str | None = None) -> dict:
-        """Call claude CLI in print mode with JSON output."""
-        cmd = [
-            "claude", "-p",
-            "--output-format", "json",
-            "--model", self._get_model(),
-            "--permission-mode", self._get_permission_mode(),
-        ]
-        if system_prompt:
-            cmd.extend(["--system-prompt", system_prompt])
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-        )
-        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
-
-        if proc.returncode != 0:
-            err = stderr.decode().strip()
-            raise RuntimeError(f"claude CLI failed: {err}")
-
-        return json.loads(stdout.decode("utf-8"))
-
     def _build_context(self, request: AgentRequest) -> str:
         """Build context string from issue sections."""
         issue = request.issue
@@ -93,23 +69,10 @@ class ClaudeCodeAgent(BaseAgent):
                 parts.append(f"\n--- {section_name} ---\n{content}")
         return "\n".join(parts)
 
-    async def execute(self, request: AgentRequest) -> AgentResponse:
-        issue = request.issue
+    async def design(self, request: AgentRequest) -> DesignOutput:
         cwd = request.context.get("worktree_path")
         context = self._build_context(request)
 
-        if request.action == "design":
-            return await self._do_design(issue, context, cwd)
-        elif request.action == "develop":
-            return await self._do_develop(issue, context, cwd)
-        elif request.action == "test":
-            return await self._do_test(issue, context, cwd)
-        else:
-            result = await self._run_claude(
-                f"{context}\n\nAction: {request.action}", cwd=cwd)
-            return AgentResponse(content=result, success=True)
-
-    async def _do_design(self, issue, context, cwd) -> AgentResponse:
         system = dedent("""\
             You are a senior software architect. Produce a detailed technical
             design document. Include: architecture, components, data structures,
@@ -120,11 +83,13 @@ class ClaudeCodeAgent(BaseAgent):
             Output ONLY the design document in markdown format.
         """)
         prompt = f"{context}\n\nProduce the technical design for this issue."
-
         result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
-        return AgentResponse(content=result, success=True)
+        return DesignOutput(document=result)
 
-    async def _do_develop(self, issue, context, cwd) -> AgentResponse:
+    async def develop(self, request: AgentRequest) -> DevelopOutput:
+        cwd = request.context.get("worktree_path")
+        context = self._build_context(request)
+
         system = dedent("""\
             You are a senior software engineer. Implement the code based on
             the design document. You MUST:
@@ -139,56 +104,11 @@ class ClaudeCodeAgent(BaseAgent):
             and what files you created/modified.
         """)
         prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
-
         result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
-        return AgentResponse(content=result, success=True)
+        files_changed = await self._get_files_changed(cwd or "")
+        return DevelopOutput(summary=result, files_changed=files_changed)
 
-    async def _do_test(self, issue, context, cwd) -> AgentResponse:
-        system = dedent("""\
-            You are a QA engineer. Run the tests and benchmarks for this project.
-
-            1. First, look at the project structure and find test files
-            2. Run the tests (pytest or appropriate test runner)
-            3. If there are benchmark/acceptance criteria in the requirements,
-               verify them
-            4. Report results with pass/fail counts
-
-            If tests fail, analyze the root cause and provide a recommendation:
-            - If the failure is due to a code bug: set recommendation to "develop"
-            - If the failure is due to a missing feature not in the design:
-              set recommendation to "design"
-
-            End your output with a line in this exact format:
-            RESULT: PASS  (if all tests/benchmarks pass)
-            or
-            RESULT: FAIL recommendation=develop  (or recommendation=design)
-        """)
-        prompt = f"{context}\n\nRun all tests and benchmarks. Report results."
-
-        result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
-
-        # Parse the RESULT line
-        success = False
-        recommendation = None
-        for line in reversed(result.strip().splitlines()):
-            line = line.strip()
-            if line.startswith("RESULT:"):
-                if "PASS" in line:
-                    success = True
-                else:
-                    success = False
-                    if "recommendation=" in line:
-                        recommendation = line.split("recommendation=")[1].strip()
-                break
-
-        metadata = {}
-        if recommendation:
-            metadata["recommendation"] = recommendation
-
-        return AgentResponse(content=result, success=success, metadata=metadata or None)
-
-    async def review(self, request: AgentRequest) -> ReviewResult:
-        issue = request.issue
+    async def review(self, request: AgentRequest) -> ReviewOutput:
         cwd = request.context.get("worktree_path")
         context = self._build_context(request)
 
@@ -218,7 +138,6 @@ class ClaudeCodeAgent(BaseAgent):
 
         # Parse JSON from the response
         try:
-            # Find JSON in the response (might be wrapped in markdown code blocks)
             json_str = result
             if "```json" in result:
                 json_str = result.split("```json")[1].split("```")[0]
@@ -234,14 +153,14 @@ class ClaudeCodeAgent(BaseAgent):
                     message=c.get("message", ""),
                     location=c.get("location"),
                 ))
-            return ReviewResult(
+            return ReviewOutput(
                 passed=data.get("passed", False),
                 comments=comments,
                 reviewer="claude-code",
             )
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             logger.warning("Failed to parse review JSON, treating as not passed: %s", e)
-            return ReviewResult(
+            return ReviewOutput(
                 passed=False,
                 comments=[ReviewComment(
                     severity=Severity.MEDIUM,
@@ -250,5 +169,43 @@ class ClaudeCodeAgent(BaseAgent):
                 reviewer="claude-code",
             )
 
-    async def stream(self, request: AgentRequest) -> AgentStream:
-        raise NotImplementedError("Streaming not yet implemented")
+    async def test(self, request: AgentRequest) -> TestOutput:
+        cwd = request.context.get("worktree_path")
+        context = self._build_context(request)
+
+        system = dedent("""\
+            You are a QA engineer. Run the tests and benchmarks for this project.
+
+            1. First, look at the project structure and find test files
+            2. Run the tests (pytest or appropriate test runner)
+            3. If there are benchmark/acceptance criteria in the requirements,
+               verify them
+            4. Report results with pass/fail counts
+
+            If tests fail, analyze the root cause and provide a recommendation:
+            - If the failure is due to a code bug: set recommendation to "develop"
+            - If the failure is due to a missing feature not in the design:
+              set recommendation to "design"
+
+            End your output with a line in this exact format:
+            RESULT: PASS  (if all tests/benchmarks pass)
+            or
+            RESULT: FAIL recommendation=develop  (or recommendation=design)
+        """)
+        prompt = f"{context}\n\nRun all tests and benchmarks. Report results."
+        result = await self._run_claude(prompt, cwd=cwd, system_prompt=system)
+
+        success = False
+        recommendation = None
+        for line in reversed(result.strip().splitlines()):
+            line = line.strip()
+            if line.startswith("RESULT:"):
+                if "PASS" in line:
+                    success = True
+                else:
+                    success = False
+                    if "recommendation=" in line:
+                        recommendation = line.split("recommendation=")[1].strip()
+                break
+
+        return TestOutput(report=result, success=success, recommendation=recommendation)

@@ -19,13 +19,6 @@ class IssueStatus(Enum):
     CANCELLED = "cancelled"
 
 
-class Severity(Enum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-
-
 class TaskStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
@@ -53,20 +46,6 @@ class InvalidTransitionError(Exception):
         self.from_status = from_status
         self.to_status = to_status
         super().__init__(f"Invalid transition: {from_status.value} → {to_status.value}")
-
-
-@dataclass
-class ReviewComment:
-    severity: Severity
-    message: str
-    location: str | None = None
-
-
-@dataclass
-class ReviewResult:
-    passed: bool
-    comments: list[ReviewComment]
-    reviewer: str
 
 
 @dataclass

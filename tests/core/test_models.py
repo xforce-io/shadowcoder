@@ -1,7 +1,6 @@
 from datetime import datetime
 from shadowcoder.core.models import (
-    IssueStatus, Severity, TaskStatus,
-    ReviewComment, ReviewResult, Issue, Task,
+    IssueStatus, TaskStatus, Issue, Task,
     InvalidTransitionError, VALID_TRANSITIONS,
 )
 
@@ -33,19 +32,6 @@ def test_task_default_status():
         action="design", agent_name="claude-code",
     )
     assert task.status == TaskStatus.RUNNING
-
-
-def test_review_result():
-    r = ReviewResult(
-        passed=False,
-        comments=[
-            ReviewComment(severity=Severity.HIGH, message="bad design"),
-            ReviewComment(severity=Severity.LOW, message="minor style"),
-        ],
-        reviewer="claude-code",
-    )
-    assert not r.passed
-    assert len(r.comments) == 2
 
 
 def test_valid_transitions_designing():
