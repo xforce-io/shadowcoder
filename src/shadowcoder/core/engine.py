@@ -97,7 +97,10 @@ class Engine:
         action_label = action.capitalize()
         try:
             for round_num in range(1, max_rounds + 1):
-                self.issue_store.transition_status(issue.id, IssueStatus[action.upper() + "ING"])
+                target_status = IssueStatus[action.upper() + "ING"]
+                issue = self.issue_store.get(issue.id)
+                if issue.status != target_status:
+                    self.issue_store.transition_status(issue.id, target_status)
                 issue = self.issue_store.get(issue.id)
                 self._log(issue.id, f"{action_label} R{round_num} 开始")
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
