@@ -4,11 +4,13 @@ from shadowcoder.core.engine import Engine
 from shadowcoder.core.bus import MessageBus, MessageType, Message
 from shadowcoder.core.issue_store import IssueStore
 from shadowcoder.core.task_manager import TaskManager
-from shadowcoder.core.models import (
-    IssueStatus, TaskStatus, ReviewResult, ReviewComment, Severity,
-)
+from shadowcoder.core.models import IssueStatus, TaskStatus
 from shadowcoder.core.config import Config
-from shadowcoder.agents.base import AgentResponse
+from shadowcoder.agents.types import (
+    AgentRequest, AgentActionFailed,
+    DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    ReviewComment, Severity,
+)
 from shadowcoder.agents.registry import AgentRegistry
 
 
@@ -42,20 +44,24 @@ def task_mgr(mock_worktree):
 @pytest.fixture
 def passing_agent():
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="design output", success=True))
-    agent.review = AsyncMock(return_value=ReviewResult(passed=True, comments=[], reviewer="mock"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="design output"))
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="develop output"))
+    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, comments=[], reviewer="mock"))
+    agent.test = AsyncMock(return_value=TestOutput(report="all pass", success=True))
     return agent
 
 
 @pytest.fixture
 def failing_review_agent():
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="output", success=True))
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
     ))
+    agent.test = AsyncMock(return_value=TestOutput(report="fail", success=False))
     return agent
 
 
@@ -86,8 +92,8 @@ async def test_design_happy_path(bus, store, task_mgr, registry_with, config):
 
 async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="output", success=True))
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
@@ -102,12 +108,12 @@ async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
 
     issue = store.get(1)
     assert issue.status == IssueStatus.BLOCKED
-    assert agent.execute.call_count == config.get_max_review_rounds()
+    assert agent.design.call_count == config.get_max_review_rounds()
 
 
 async def test_design_agent_failure(bus, store, task_mgr, config):
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="err", success=False))
+    agent.design = AsyncMock(side_effect=AgentActionFailed("design failed", partial_output="err"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
@@ -122,7 +128,7 @@ async def test_design_agent_failure(bus, store, task_mgr, config):
 
 async def test_design_agent_exception(bus, store, task_mgr, config):
     agent = AsyncMock()
-    agent.execute = AsyncMock(side_effect=RuntimeError("crash"))
+    agent.design = AsyncMock(side_effect=RuntimeError("crash"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
@@ -188,8 +194,8 @@ async def test_cancel(bus, store, task_mgr, registry_with, config):
 
 async def test_approve_blocked(bus, store, task_mgr, config):
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="output", success=True))
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
@@ -223,19 +229,19 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
     call_count = 0
     agent = AsyncMock()
 
-    async def execute_side_effect(request):
-        return AgentResponse(content="output", success=True)
+    async def design_side_effect(request):
+        return DesignOutput(document="output")
 
     async def review_side_effect(request):
         nonlocal call_count
         call_count += 1
         if call_count <= config.get_max_review_rounds():
-            return ReviewResult(passed=False,
+            return ReviewOutput(passed=False,
                 comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
                 reviewer="mock")
-        return ReviewResult(passed=True, comments=[], reviewer="mock")
+        return ReviewOutput(passed=True, comments=[], reviewer="mock")
 
-    agent.execute = AsyncMock(side_effect=execute_side_effect)
+    agent.design = AsyncMock(side_effect=design_side_effect)
     agent.review = AsyncMock(side_effect=review_side_effect)
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -252,7 +258,7 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
 
 async def test_all_reviewers_unavailable(bus, store, task_mgr, config):
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(content="output", success=True))
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(side_effect=RuntimeError("reviewer crash"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)

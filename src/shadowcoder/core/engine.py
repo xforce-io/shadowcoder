@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from shadowcoder.agents.base import AgentRequest
+from shadowcoder.agents.types import AgentRequest, AgentActionFailed
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -109,26 +109,23 @@ class Engine:
                 agent = self.agents.get(issue.assignee or "default")
                 request = AgentRequest(action=action, issue=issue,
                     context={"worktree_path": task.worktree_path})
-                response = await agent.execute(request)
 
-                if not response.success:
-                    self.issue_store.update_section(issue.id, section_key, response.content)
-                    self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
-                    self._log(issue.id, f"{action_label} R{round_num} Agent 报告失败 → FAILED")
-                    task.status = TaskStatus.FAILED
-                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
-                        {"issue_id": issue.id, "task_id": task.task_id,
-                         "reason": "agent reported failure"}))
-                    return
+                if action == "design":
+                    output = await agent.design(request)
+                    content = output.document
+                    feat_summary = ""
+                elif action == "develop":
+                    output = await agent.develop(request)
+                    content = output.summary
+                    files = output.files_changed
+                    feat_summary = f" (files: {', '.join(files)})" if files else ""
+                else:
+                    raise ValueError(f"Unknown action for _run_with_review: {action}")
 
-                # Summarize what agent produced
-                meta = response.metadata or {}
-                features = meta.get("included_features") or meta.get("implemented_features")
-                feat_summary = f" (features: {', '.join(features)})" if features else ""
-                self.issue_store.update_section(issue.id, section_key, response.content)
+                self.issue_store.update_section(issue.id, section_key, content)
                 self._log(issue.id,
                     f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
-                    f"内容长度: {len(response.content)} 字符")
+                    f"内容长度: {len(content)} 字符")
 
                 self.issue_store.transition_status(issue.id, IssueStatus[review_stage.upper()])
                 issue = self.issue_store.get(issue.id)
@@ -162,6 +159,15 @@ class Engine:
                 {"issue_id": issue.id, "task_id": task.task_id,
                  "reason": f"review not passed after {max_rounds} rounds"}))
 
+        except AgentActionFailed as e:
+            partial = e.partial_output if e.partial_output else ""
+            if partial:
+                self.issue_store.update_section(issue.id, section_key, partial)
+            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            self._log(issue.id, f"{action_label} Agent 操作失败 → FAILED: {e}")
+            task.status = TaskStatus.FAILED
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
         except Exception as e:
             self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
             self._log(issue.id, f"{action_label} 异常 → FAILED: {e}")
@@ -202,14 +208,14 @@ class Engine:
                 issue = self.issue_store.get(issue.id)
 
                 agent = self.agents.get(issue.assignee or "default")
-                response = await agent.execute(AgentRequest(action="test", issue=issue,
-                    context={"worktree_path": task.worktree_path}))
-                self.issue_store.update_section(issue.id, "测试", response.content)
+                request = AgentRequest(action="test", issue=issue,
+                    context={"worktree_path": task.worktree_path})
+                output = await agent.test(request)
+                self.issue_store.update_section(issue.id, "测试", output.report)
 
-                if response.success:
-                    meta = response.metadata or {}
-                    passed = meta.get("passed", "?")
-                    total = meta.get("total", "?")
+                if output.success:
+                    passed = output.passed_count if output.passed_count is not None else "?"
+                    total = output.total_count if output.total_count is not None else "?"
                     self.issue_store.transition_status(issue.id, IssueStatus.DONE)
                     self._log(issue.id,
                         f"Test R{attempt} — PASSED ({passed}/{total}) → DONE")
@@ -219,10 +225,9 @@ class Engine:
                     return
 
                 # --- Test failed: check recommendation ---
-                meta = response.metadata or {}
-                recommendation = meta.get("recommendation")
-                passed = meta.get("passed", "?")
-                total = meta.get("total", "?")
+                recommendation = output.recommendation
+                passed = output.passed_count if output.passed_count is not None else "?"
+                total = output.total_count if output.total_count is not None else "?"
                 self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
                 self._log(issue.id,
                     f"Test R{attempt} — FAILED ({passed}/{total})\n"
@@ -264,6 +269,12 @@ class Engine:
 
                 # Loop: re-test
 
+            except AgentActionFailed as e:
+                self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                task.status = TaskStatus.FAILED
+                await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                    {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+                return
             except Exception as e:
                 self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
                 task.status = TaskStatus.FAILED

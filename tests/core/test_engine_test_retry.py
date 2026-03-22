@@ -5,11 +5,13 @@ from shadowcoder.core.engine import Engine
 from shadowcoder.core.bus import MessageBus, MessageType, Message
 from shadowcoder.core.issue_store import IssueStore
 from shadowcoder.core.task_manager import TaskManager
-from shadowcoder.core.models import (
-    IssueStatus, ReviewResult, ReviewComment, Severity,
-)
+from shadowcoder.core.models import IssueStatus
 from shadowcoder.core.config import Config
-from shadowcoder.agents.base import AgentResponse
+from shadowcoder.agents.types import (
+    AgentRequest, AgentActionFailed,
+    DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    ReviewComment, Severity,
+)
 
 
 @pytest.fixture
@@ -56,22 +58,21 @@ def _setup_issue_at_testing(store):
 
 async def test_test_retry_with_develop_recommendation(bus, store, task_mgr, config):
     """Test fails with recommendation=develop → auto develop → re-test → pass."""
-    call_count = 0
+    test_call_count = 0
 
-    async def test_execute(request):
-        nonlocal call_count
-        if request.action == "test":
-            call_count += 1
-            if call_count == 1:
-                return AgentResponse(content="benchmark 5/7", success=False,
-                    metadata={"recommendation": "develop"})
-            return AgentResponse(content="benchmark 7/7", success=True)
-        # develop action
-        return AgentResponse(content="fixed code", success=True)
+    async def test_side_effect(request):
+        nonlocal test_call_count
+        test_call_count += 1
+        if test_call_count == 1:
+            return TestOutput(report="benchmark 5/7", success=False,
+                recommendation="develop")
+        return TestOutput(report="benchmark 7/7", success=True)
 
     agent = AsyncMock()
-    agent.execute = AsyncMock(side_effect=test_execute)
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.test = AsyncMock(side_effect=test_side_effect)
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="fixed code"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=True, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -83,26 +84,26 @@ async def test_test_retry_with_develop_recommendation(bus, store, task_mgr, conf
 
     issue = store.get(1)
     assert issue.status == IssueStatus.DONE
-    assert call_count == 2  # test failed once, then passed
+    assert test_call_count == 2  # test failed once, then passed
 
 
 async def test_test_retry_with_design_recommendation(bus, store, task_mgr, config):
     """Test fails with recommendation=design → auto design+develop → re-test → pass."""
-    call_count = 0
+    test_call_count = 0
 
-    async def test_execute(request):
-        nonlocal call_count
-        if request.action == "test":
-            call_count += 1
-            if call_count == 1:
-                return AgentResponse(content="missing feature", success=False,
-                    metadata={"recommendation": "design"})
-            return AgentResponse(content="all pass", success=True)
-        return AgentResponse(content="output", success=True)
+    async def test_side_effect(request):
+        nonlocal test_call_count
+        test_call_count += 1
+        if test_call_count == 1:
+            return TestOutput(report="missing feature", success=False,
+                recommendation="design")
+        return TestOutput(report="all pass", success=True)
 
     agent = AsyncMock()
-    agent.execute = AsyncMock(side_effect=test_execute)
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.test = AsyncMock(side_effect=test_side_effect)
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=True, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -119,8 +120,8 @@ async def test_test_retry_with_design_recommendation(bus, store, task_mgr, confi
 async def test_test_no_recommendation_stays_failed(bus, store, task_mgr, config):
     """Test fails with no recommendation → FAILED, no auto-retry."""
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(
-        content="failed", success=False, metadata={}))
+    agent.test = AsyncMock(return_value=TestOutput(
+        report="failed", success=False, recommendation=None))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
@@ -135,15 +136,12 @@ async def test_test_no_recommendation_stays_failed(bus, store, task_mgr, config)
 
 async def test_test_retries_exhausted_blocked(bus, store, task_mgr, config):
     """Test keeps failing with recommendation=develop → exhausts retries → BLOCKED."""
-    async def always_fail_test(request):
-        if request.action == "test":
-            return AgentResponse(content="still failing", success=False,
-                metadata={"recommendation": "develop"})
-        return AgentResponse(content="code", success=True)
-
     agent = AsyncMock()
-    agent.execute = AsyncMock(side_effect=always_fail_test)
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.test = AsyncMock(return_value=TestOutput(
+        report="still failing", success=False, recommendation="develop"))
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=True, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -167,15 +165,12 @@ async def test_test_retries_exhausted_blocked(bus, store, task_mgr, config):
 async def test_test_recommendation_develop_fails_review_stops(bus, store, task_mgr, config):
     """Test fails → develop auto-triggered → develop review fails all rounds →
     develop goes BLOCKED → test loop stops (doesn't retry)."""
-    async def test_execute(request):
-        if request.action == "test":
-            return AgentResponse(content="fail", success=False,
-                metadata={"recommendation": "develop"})
-        return AgentResponse(content="code", success=True)
-
     agent = AsyncMock()
-    agent.execute = AsyncMock(side_effect=test_execute)
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.test = AsyncMock(return_value=TestOutput(
+        report="fail", success=False, recommendation="develop"))
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
@@ -196,10 +191,11 @@ async def test_test_recommendation_develop_fails_review_stops(bus, store, task_m
 async def test_test_event_includes_recommendation(bus, store, task_mgr, config):
     """EVT_TASK_FAILED payload includes the recommendation."""
     agent = AsyncMock()
-    agent.execute = AsyncMock(return_value=AgentResponse(
-        content="fail", success=False,
-        metadata={"recommendation": "develop"}))
-    agent.review = AsyncMock(return_value=ReviewResult(
+    agent.test = AsyncMock(return_value=TestOutput(
+        report="fail", success=False, recommendation="develop"))
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
         passed=True, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
