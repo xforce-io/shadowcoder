@@ -67,6 +67,23 @@ class Engine:
                 f"Cost: ${cost:.4f} | "
                 f"Time: {total_duration:.1f}s")
 
+    def _get_latest_review(self, issue_id: int, review_section_key: str) -> str:
+        """Extract the latest full review from the log file."""
+        log = self.issue_store.get_log(issue_id)
+        if not log:
+            return ""
+        # Find the last occurrence of the review section key in the log
+        marker = f"] {review_section_key}\n"
+        idx = log.rfind(marker)
+        if idx < 0:
+            return ""
+        # Extract from that point to the next log entry (## [) or end
+        start = idx + len(marker)
+        next_entry = log.find("\n\n## [", start)
+        if next_entry < 0:
+            return log[start:].strip()
+        return log[start:next_entry].strip()
+
     def _check_budget(self, issue_id: int) -> bool:
         """Check if budget exceeded. Returns True if over budget."""
         max_budget = self.config.get_max_budget_usd()
@@ -147,8 +164,14 @@ class Engine:
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
                 agent = self.agents.get(issue.assignee or "default")
+                # Include latest full review from log file so agent sees
+                # specific feedback, not just the summary in .md
+                latest_review = self._get_latest_review(issue.id, review_section_key)
                 request = AgentRequest(action=action, issue=issue,
-                    context={"worktree_path": task.worktree_path})
+                    context={
+                        "worktree_path": task.worktree_path,
+                        "latest_review": latest_review,
+                    })
 
                 if action == "design":
                     output = await agent.design(request)

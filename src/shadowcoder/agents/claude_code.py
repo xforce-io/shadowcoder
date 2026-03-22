@@ -102,13 +102,17 @@ class ClaudeCodeAgent(BaseAgent):
         return result_text, usage
 
     def _build_context(self, request: AgentRequest) -> str:
-        """Build context string from issue sections."""
+        """Build context string from issue sections + latest full review."""
         issue = request.issue
         parts = [f"Issue: {issue.title} (#{issue.id})"]
-        for section_name in ["需求", "设计", "Design Review", "开发步骤", "Dev Review", "测试"]:
+        for section_name in ["需求", "设计", "开发步骤", "测试"]:
             content = issue.sections.get(section_name, "")
             if content:
                 parts.append(f"\n--- {section_name} ---\n{content}")
+        # Use full review from log (not the summary in .md)
+        latest_review = request.context.get("latest_review", "")
+        if latest_review:
+            parts.append(f"\n--- Latest Review Feedback ---\n{latest_review}")
         return "\n".join(parts)
 
     async def design(self, request: AgentRequest) -> DesignOutput:
