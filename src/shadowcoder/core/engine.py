@@ -147,35 +147,87 @@ class Engine:
             section_key="开发步骤", review_section_key="Dev Review")
 
     async def _on_test(self, msg):
-        issue = self.issue_store.get(msg.payload["issue_id"])
-        task = await self.task_manager.create(issue, repo_path=self.repo_path,
-            action="test", agent_name=issue.assignee or "default")
-        try:
-            if issue.status != IssueStatus.TESTING:
-                self.issue_store.transition_status(issue.id, IssueStatus.TESTING)
-            issue = self.issue_store.get(issue.id)
+        """Test with auto-retry: on failure, read recommendation from agent
+        response metadata and route to develop/design automatically.
+        Retries up to max_test_retries before going BLOCKED."""
+        issue_id = msg.payload["issue_id"]
+        max_retries = self.config.get_max_test_retries()
 
-            agent = self.agents.get(issue.assignee or "default")
-            response = await agent.execute(AgentRequest(action="test", issue=issue,
-                context={"worktree_path": task.worktree_path}))
-            self.issue_store.update_section(issue.id, "测试", response.content)
+        for attempt in range(1, max_retries + 1):
+            issue = self.issue_store.get(issue_id)
+            task = await self.task_manager.create(issue, repo_path=self.repo_path,
+                action="test", agent_name=issue.assignee or "default")
+            try:
+                if issue.status != IssueStatus.TESTING:
+                    self.issue_store.transition_status(issue.id, IssueStatus.TESTING)
+                issue = self.issue_store.get(issue.id)
 
-            if response.success:
-                self.issue_store.transition_status(issue.id, IssueStatus.DONE)
-                task.status = TaskStatus.COMPLETED
-                await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
-                    {"issue_id": issue.id, "task_id": task.task_id}))
-            else:
+                agent = self.agents.get(issue.assignee or "default")
+                response = await agent.execute(AgentRequest(action="test", issue=issue,
+                    context={"worktree_path": task.worktree_path}))
+                self.issue_store.update_section(issue.id, "测试", response.content)
+
+                if response.success:
+                    self.issue_store.transition_status(issue.id, IssueStatus.DONE)
+                    task.status = TaskStatus.COMPLETED
+                    await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                        {"issue_id": issue.id, "task_id": task.task_id}))
+                    return
+
+                # --- Test failed: check recommendation ---
+                recommendation = (response.metadata or {}).get("recommendation")
+                self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                task.status = TaskStatus.FAILED
+                await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+                    "issue_id": issue.id, "task_id": task.task_id,
+                    "reason": "tests failed",
+                    "recommendation": recommendation,
+                    "attempt": attempt,
+                }))
+
+                if not recommendation:
+                    # No recommendation — stop, let human decide
+                    return
+
+                if attempt >= max_retries:
+                    break  # fall through to BLOCKED
+
+                # Route to recommended stage
+                route_msg = Message(msg.type, {"issue_id": issue.id})
+                if recommendation == "develop":
+                    await self._on_develop(route_msg)
+                elif recommendation == "design":
+                    await self._on_design(route_msg)
+                    # After design passes, also need develop before re-testing
+                    issue = self.issue_store.get(issue_id)
+                    if issue.status == IssueStatus.APPROVED:
+                        await self._on_develop(route_msg)
+                else:
+                    return  # unknown recommendation, let human decide
+
+                # Check if the routed stage succeeded (issue should be at TESTING)
+                issue = self.issue_store.get(issue_id)
+                if issue.status != IssueStatus.TESTING:
+                    # develop/design didn't complete successfully, stop
+                    return
+
+                # Loop: re-test
+
+            except Exception as e:
                 self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
                 task.status = TaskStatus.FAILED
                 await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
-                    {"issue_id": issue.id, "task_id": task.task_id, "reason": "tests failed"}))
+                    {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+                return
 
-        except Exception as e:
-            self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
-            task.status = TaskStatus.FAILED
-            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
-                {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
+        # Retries exhausted → BLOCKED
+        issue = self.issue_store.get(issue_id)
+        if issue.status == IssueStatus.FAILED:
+            self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+        await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+            "issue_id": issue_id, "reason":
+            f"test failed after {max_retries} retries, awaiting human intervention",
+        }))
 
     def _infer_blocked_stage(self, issue):
         if "Dev Review" in issue.sections:

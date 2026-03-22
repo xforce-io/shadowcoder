@@ -443,6 +443,21 @@ for round in 1..max_review_rounds:
 | 所有 reviewer 不可用 | FAILED | FAILED | 是，用户重跑 |
 | Review 轮次耗尽 | BLOCKED | FAILED | 等人类介入后 `resume #id` |
 | 用户取消 | CANCELLED | CANCELLED | 是，用户重新发命令 |
+| Test 失败（有 recommendation） | FAILED → 自动路由 | FAILED | 自动触发 develop/design，然后重新 test |
+| Test 重试耗尽 | BLOCKED | FAILED | 等人类介入 |
+
+#### Test 失败自动路由
+
+test 阶段失败时，Agent 可在 `response.metadata["recommendation"]` 中给出建议：
+
+- `"develop"` → Engine 自动触发 `_on_develop`，develop 通过后自动重新 test
+- `"design"` → Engine 自动触发 `_on_design`，design 通过后自动 develop，再 test
+- `None` 或无 recommendation → FAILED，等人类决定
+
+自动路由有重试上限 `max_test_retries`（默认 3），超限进入 BLOCKED。
+
+如果路由到的 develop/design 自身也失败（review 循环耗尽等），test 循环自动停止，
+issue 停留在 develop/design 导致的终态（BLOCKED/FAILED）。
 
 #### BLOCKED 状态的人类介入
 

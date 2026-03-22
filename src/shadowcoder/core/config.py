@@ -28,6 +28,9 @@ class Config:
     def get_max_review_rounds(self) -> int:
         return self._data.get("review_policy", {}).get("max_review_rounds", 3)
 
+    def get_max_test_retries(self) -> int:
+        return self._data.get("review_policy", {}).get("max_test_retries", 3)
+
     def get_issue_dir(self) -> str:
         return self._data.get("issue_store", {}).get("dir", ".shadowcoder/issues")
 
