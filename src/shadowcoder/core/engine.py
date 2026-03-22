@@ -35,16 +35,23 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
         self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
 
+    def _log(self, issue_id: int, entry: str):
+        """Append to 航海日志."""
+        try:
+            self.issue_store.append_log(issue_id, entry)
+        except Exception:
+            logger.debug("Failed to write log for issue %d", issue_id)
+
     async def _on_create(self, msg):
         title = msg.payload["title"]
         priority = msg.payload.get("priority", "medium")
         tags = msg.payload.get("tags")
         description = msg.payload.get("description")
-        # If description is a file path, read its content
         if description and Path(description).is_file():
             description = Path(description).read_text(encoding="utf-8")
         issue = self.issue_store.create(title, priority=priority, tags=tags,
                                         description=description)
+        self._log(issue.id, f"Issue 创建: {title}")
         await self.bus.publish(Message(MessageType.EVT_ISSUE_CREATED,
             {"issue_id": issue.id, "title": issue.title}))
 
@@ -87,10 +94,12 @@ class Engine:
     async def _run_with_review(self, issue, task, action, review_stage,
                                 success_status, section_key, review_section_key):
         max_rounds = self.config.get_max_review_rounds()
+        action_label = action.capitalize()
         try:
             for round_num in range(1, max_rounds + 1):
                 self.issue_store.transition_status(issue.id, IssueStatus[action.upper() + "ING"])
                 issue = self.issue_store.get(issue.id)
+                self._log(issue.id, f"{action_label} R{round_num} 开始")
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
@@ -102,13 +111,21 @@ class Engine:
                 if not response.success:
                     self.issue_store.update_section(issue.id, section_key, response.content)
                     self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                    self._log(issue.id, f"{action_label} R{round_num} Agent 报告失败 → FAILED")
                     task.status = TaskStatus.FAILED
                     await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                         {"issue_id": issue.id, "task_id": task.task_id,
                          "reason": "agent reported failure"}))
                     return
 
+                # Summarize what agent produced
+                meta = response.metadata or {}
+                features = meta.get("included_features") or meta.get("implemented_features")
+                feat_summary = f" (features: {', '.join(features)})" if features else ""
                 self.issue_store.update_section(issue.id, section_key, response.content)
+                self._log(issue.id,
+                    f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
+                    f"内容长度: {len(response.content)} 字符")
 
                 self.issue_store.transition_status(issue.id, IssueStatus[review_stage.upper()])
                 issue = self.issue_store.get(issue.id)
@@ -117,14 +134,26 @@ class Engine:
 
                 if all_passed:
                     self.issue_store.transition_status(issue.id, success_status)
+                    self._log(issue.id,
+                        f"{action_label} Review R{round_num} — PASSED → {success_status.value}")
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
 
+                # Summarize review rejection
+                review_content = self.issue_store.get(issue.id).sections.get(review_section_key, "")
+                reject_lines = [l for l in review_content.split("\n") if "[HIGH]" in l]
+                reject_summary = "; ".join(l.strip()[:80] for l in reject_lines[-5:])
+                self._log(issue.id,
+                    f"{action_label} Review R{round_num} — NOT PASSED\n"
+                    f"HIGH issues: {reject_summary or '(see review section)'}")
+
                 issue = self.issue_store.get(issue.id)
 
             self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+            self._log(issue.id,
+                f"{action_label} review 未通过，已重试 {max_rounds} 轮 → BLOCKED")
             task.status = TaskStatus.FAILED
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id,
@@ -132,6 +161,7 @@ class Engine:
 
         except Exception as e:
             self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+            self._log(issue.id, f"{action_label} 异常 → FAILED: {e}")
             task.status = TaskStatus.FAILED
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
@@ -174,15 +204,26 @@ class Engine:
                 self.issue_store.update_section(issue.id, "测试", response.content)
 
                 if response.success:
+                    meta = response.metadata or {}
+                    passed = meta.get("passed", "?")
+                    total = meta.get("total", "?")
                     self.issue_store.transition_status(issue.id, IssueStatus.DONE)
+                    self._log(issue.id,
+                        f"Test R{attempt} — PASSED ({passed}/{total}) → DONE")
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
 
                 # --- Test failed: check recommendation ---
-                recommendation = (response.metadata or {}).get("recommendation")
+                meta = response.metadata or {}
+                recommendation = meta.get("recommendation")
+                passed = meta.get("passed", "?")
+                total = meta.get("total", "?")
                 self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
+                self._log(issue.id,
+                    f"Test R{attempt} — FAILED ({passed}/{total})\n"
+                    f"Recommendation: {recommendation or 'none'}")
                 task.status = TaskStatus.FAILED
                 await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
                     "issue_id": issue.id, "task_id": task.task_id,
@@ -192,19 +233,20 @@ class Engine:
                 }))
 
                 if not recommendation:
-                    # No recommendation — stop, let human decide
+                    self._log(issue.id, "无 recommendation，等待人类介入")
                     return
 
                 if attempt >= max_retries:
                     break  # fall through to BLOCKED
 
                 # Route to recommended stage
+                self._log(issue.id,
+                    f"自动路由到 {recommendation} (test attempt {attempt}/{max_retries})")
                 route_msg = Message(msg.type, {"issue_id": issue.id})
                 if recommendation == "develop":
                     await self._on_develop(route_msg)
                 elif recommendation == "design":
                     await self._on_design(route_msg)
-                    # After design passes, also need develop before re-testing
                     issue = self.issue_store.get(issue_id)
                     if issue.status == IssueStatus.APPROVED:
                         await self._on_develop(route_msg)
@@ -230,6 +272,8 @@ class Engine:
         issue = self.issue_store.get(issue_id)
         if issue.status == IssueStatus.FAILED:
             self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+        self._log(issue_id,
+            f"Test 重试耗尽 ({max_retries} 轮) → BLOCKED，等待人类介入")
         await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
             "issue_id": issue_id, "reason":
             f"test failed after {max_retries} retries, awaiting human intervention",
@@ -249,6 +293,7 @@ class Engine:
                 {"message": f"issue #{issue.id} is not BLOCKED"}))
             return
         action = self._infer_blocked_stage(issue)
+        self._log(issue.id, f"人类介入: resume → 重跑 {action}")
         if action == "design":
             await self._on_design(msg)
         elif action == "develop":
@@ -266,12 +311,14 @@ class Engine:
         stage = self._infer_blocked_stage(issue)
         next_status = IssueStatus.TESTING if stage == "develop" else IssueStatus.APPROVED
         self.issue_store.transition_status(issue.id, next_status)
+        self._log(issue.id, f"人类介入: approve → {next_status.value}")
         await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
             {"issue_id": issue.id, "status": next_status.value}))
 
     async def _on_cancel(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
         self.issue_store.transition_status(issue.id, IssueStatus.CANCELLED)
+        self._log(issue.id, "用户取消 → CANCELLED")
         for task in self.task_manager.list_active():
             if task.issue_id == issue.id:
                 await self.task_manager.cancel(task.task_id)

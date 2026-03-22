@@ -1079,13 +1079,18 @@ async def test_sql_engine_goal_driven(system):
         f"Expected all {total} benchmarks to pass"
     assert "All benchmarks passed" in test_content
 
-    # Verify all sections present
+    # Verify all sections present (including 航海日志)
     assert "需求" in issue.sections
     assert "设计" in issue.sections
     assert "Design Review" in issue.sections
     assert "开发步骤" in issue.sections
     assert "Dev Review" in issue.sections
     assert "测试" in issue.sections
+    assert "航海日志" in issue.sections, "航海日志 should be present"
+
+    # Print the full voyage log
+    voyage_log = issue.sections["航海日志"]
+    print(f"\n=== 航海日志 ===\n{voyage_log}\n===============")
 
     # Verify file integrity
     issue_file = repo / ".shadowcoder" / "issues" / "0001.md"

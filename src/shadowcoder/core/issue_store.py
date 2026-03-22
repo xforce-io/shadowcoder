@@ -95,6 +95,18 @@ class IssueStore:
             issue.sections[section] = formatted
         self._save(issue)
 
+    def append_log(self, issue_id: int, entry: str) -> None:
+        """Append a timestamped entry to the 航海日志 section."""
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"## [{ts}] {entry}"
+        issue = self.get(issue_id)
+        existing = issue.sections.get("航海日志", "")
+        if existing:
+            issue.sections["航海日志"] = existing + "\n\n" + log_entry
+        else:
+            issue.sections["航海日志"] = log_entry
+        self._save(issue)
+
     def assign(self, issue_id: int, agent_name: str) -> None:
         issue = self.get(issue_id)
         issue.assignee = agent_name

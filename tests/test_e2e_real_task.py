@@ -699,7 +699,7 @@ async def test_real_task_full_lifecycle(system):
     # ===== FINAL VERIFICATION =====
 
     # -- All sections present --
-    expected_sections = {"设计", "Design Review", "开发步骤", "Dev Review", "测试"}
+    expected_sections = {"设计", "Design Review", "开发步骤", "Dev Review", "测试", "航海日志"}
     assert expected_sections == set(issue.sections.keys()), \
         f"Missing sections: {expected_sections - set(issue.sections.keys())}"
 
