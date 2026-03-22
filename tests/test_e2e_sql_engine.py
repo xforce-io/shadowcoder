@@ -889,11 +889,12 @@ class StateDrivenAgent(BaseAgent):
                             f"Requirements mention keywords: "
                             f"{DESIGN_FEATURES.get(feat, {}).get('required_keywords', [feat])}",
                 ))
-            return ReviewOutput(passed=False, comments=comments,
+            return ReviewOutput(passed=False, score=40, comments=comments,
                                 reviewer=f"{phase}-reviewer")
 
         return ReviewOutput(
             passed=True,
+            score=95,
             comments=[ReviewComment(
                 severity=Severity.LOW,
                 message=f"All required features covered in {phase}.",

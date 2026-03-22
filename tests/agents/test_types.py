@@ -41,10 +41,11 @@ def test_develop_output_with_files():
 
 
 def test_review_output():
-    o = ReviewOutput(passed=False, comments=[
+    o = ReviewOutput(passed=False, score=40, comments=[
         ReviewComment(severity=Severity.HIGH, message="fix this")
     ], reviewer="claude")
     assert not o.passed
+    assert o.score == 40
     assert len(o.comments) == 1
 
 
@@ -52,6 +53,15 @@ def test_review_output_defaults():
     o = ReviewOutput(passed=True)
     assert o.comments == []
     assert o.reviewer == ""
+    assert o.score == 50  # default score
+
+
+def test_review_output_score_explicit():
+    o = ReviewOutput(passed=True, score=95)
+    assert o.score == 95
+
+    o2 = ReviewOutput(passed=False, score=40)
+    assert o2.score == 40
 
 
 def test_test_output():

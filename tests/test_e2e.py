@@ -88,6 +88,7 @@ test_subtract_self ........ PASSED
         if self._review_call_counter <= self._review_fail_count:
             return ReviewOutput(
                 passed=False,
+                score=40,
                 comments=[
                     ReviewComment(
                         severity=Severity.HIGH,
@@ -98,6 +99,7 @@ test_subtract_self ........ PASSED
             )
         return ReviewOutput(
             passed=True,
+            score=95,
             comments=[
                 ReviewComment(
                     severity=Severity.LOW,

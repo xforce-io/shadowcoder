@@ -174,13 +174,13 @@ class ClaudeCodeAgent(BaseAgent):
             - medium: code quality issue or minor missing feature
             - low: style, naming, or minor improvement
 
-            Output your review in this exact JSON format (nothing else):
-            {
-              "passed": true/false,
-              "comments": [
-                {"severity": "high", "message": "description", "location": "file:line or section"}
-              ]
-            }
+            Output ONLY JSON: {"passed": bool, "score": 0-100, "comments": [...]}
+
+            Score guide:
+            - 90-100: production ready, no significant issues
+            - 70-89: acceptable with minor issues that can be fixed in next phase
+            - 50-69: significant gaps that need addressing before proceeding
+            - 0-49: fundamental problems, needs major rework
 
             Pass only if there are no critical or high severity issues.
         """)
@@ -207,6 +207,7 @@ class ClaudeCodeAgent(BaseAgent):
                 ))
             return ReviewOutput(
                 passed=data.get("passed", False),
+                score=data.get("score", 50),
                 comments=comments,
                 reviewer="claude-code",
                 usage=usage,
@@ -215,6 +216,7 @@ class ClaudeCodeAgent(BaseAgent):
             logger.warning("Failed to parse review JSON, treating as not passed: %s", e)
             return ReviewOutput(
                 passed=False,
+                score=30,
                 comments=[ReviewComment(
                     severity=Severity.MEDIUM,
                     message=f"Review output could not be parsed: {result[:200]}",

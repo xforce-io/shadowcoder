@@ -48,7 +48,7 @@ def passing_agent():
     agent = AsyncMock()
     agent.design = AsyncMock(return_value=DesignOutput(document="design output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="develop output"))
-    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, comments=[], reviewer="mock"))
+    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, score=95, comments=[], reviewer="mock"))
     agent.test = AsyncMock(return_value=TestOutput(report="all pass", success=True))
     return agent
 
@@ -60,6 +60,7 @@ def failing_review_agent():
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
+        score=40,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
     ))
@@ -97,6 +98,7 @@ async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
+        score=40,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
     ))
@@ -199,6 +201,7 @@ async def test_approve_blocked(bus, store, task_mgr, config):
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
+        score=40,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
     ))
@@ -238,10 +241,10 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
         nonlocal call_count
         call_count += 1
         if call_count <= config.get_max_review_rounds():
-            return ReviewOutput(passed=False,
+            return ReviewOutput(passed=False, score=40,
                 comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
                 reviewer="mock")
-        return ReviewOutput(passed=True, comments=[], reviewer="mock")
+        return ReviewOutput(passed=True, score=95, comments=[], reviewer="mock")
 
     agent.design = AsyncMock(side_effect=design_side_effect)
     agent.review = AsyncMock(side_effect=review_side_effect)
@@ -382,3 +385,30 @@ worktree:
     assert issue.status == IssueStatus.BLOCKED
     assert len(failed_events) == 1
     assert "budget exceeded" in failed_events[0].payload["reason"]
+
+
+async def test_conditional_pass(bus, store, task_mgr, config):
+    """Review returns score=75 (conditional pass) — issue should still proceed to next status."""
+    agent = AsyncMock()
+    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
+        passed=True,
+        score=75,
+        comments=[ReviewComment(severity=Severity.MEDIUM, message="minor issue")],
+        reviewer="mock",
+    ))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    store.create("Conditional pass issue")
+
+    completed_events = []
+    bus.subscribe(MessageType.EVT_TASK_COMPLETED, lambda m: completed_events.append(m))
+
+    await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+
+    issue = store.get(1)
+    # score=75 >= 70, so should conditionally pass and proceed to APPROVED
+    assert issue.status == IssueStatus.APPROVED
+    assert len(completed_events) == 1

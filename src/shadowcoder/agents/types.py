@@ -51,7 +51,8 @@ class DevelopOutput:
 
 @dataclass
 class ReviewOutput:
-    passed: bool
+    passed: bool                    # kept for backward compat, Engine overrides based on score
+    score: int = 50                 # 0-100 confidence score
     comments: list[ReviewComment] = field(default_factory=list)
     reviewer: str = ""
     usage: AgentUsage | None = None

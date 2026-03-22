@@ -18,7 +18,7 @@ async def test_full_lifecycle(tmp_repo, tmp_config):
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.test = AsyncMock(return_value=TestOutput(report="output", success=True))
-    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, comments=[], reviewer="mock"))
+    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, score=95, comments=[], reviewer="mock"))
 
     AgentRegistry.register("claude_code", lambda cfg: agent)
     registry = AgentRegistry(config)

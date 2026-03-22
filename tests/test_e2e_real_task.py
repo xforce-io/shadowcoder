@@ -350,6 +350,7 @@ tests/test_cli.py::test_cli_exit_code_1 ................... PASSED
 
 REVIEW_DESIGN_REJECT = ReviewOutput(
     passed=False,
+    score=40,
     comments=[
         ReviewComment(
             severity=Severity.HIGH,
@@ -382,6 +383,7 @@ REVIEW_DESIGN_REJECT = ReviewOutput(
 
 REVIEW_DESIGN_APPROVE = ReviewOutput(
     passed=True,
+    score=95,
     comments=[
         ReviewComment(
             severity=Severity.LOW,
@@ -398,6 +400,7 @@ REVIEW_DESIGN_APPROVE = ReviewOutput(
 
 REVIEW_DEVELOP_REJECT = ReviewOutput(
     passed=False,
+    score=40,
     comments=[
         ReviewComment(
             severity=Severity.HIGH,
@@ -424,6 +427,7 @@ REVIEW_DEVELOP_REJECT = ReviewOutput(
 
 REVIEW_DEVELOP_APPROVE = ReviewOutput(
     passed=True,
+    score=95,
     comments=[
         ReviewComment(
             severity=Severity.LOW,

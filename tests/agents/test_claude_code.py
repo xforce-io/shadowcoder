@@ -50,10 +50,11 @@ async def test_develop_returns_output(agent, sample_request):
 async def test_review_returns_result(agent, sample_request):
     sample_request.action = "review"
     agent._run_claude_with_usage = AsyncMock(
-        return_value=('{"passed": true, "comments": []}', _make_usage()))
+        return_value=('{"passed": true, "score": 95, "comments": []}', _make_usage()))
     result = await agent.review(sample_request)
     assert isinstance(result, ReviewOutput)
     assert result.passed is True
+    assert result.score == 95
     assert result.reviewer == "claude-code"
     assert result.usage is not None
 
@@ -61,11 +62,12 @@ async def test_review_returns_result(agent, sample_request):
 async def test_review_with_issues(agent, sample_request):
     sample_request.action = "review"
     agent._run_claude_with_usage = AsyncMock(return_value=(
-        '{"passed": false, "comments": [{"severity": "high", "message": "Missing error handling", "location": "parser.py:45"}]}',
+        '{"passed": false, "score": 40, "comments": [{"severity": "high", "message": "Missing error handling", "location": "parser.py:45"}]}',
         _make_usage(),
     ))
     result = await agent.review(sample_request)
     assert not result.passed
+    assert result.score == 40
     assert len(result.comments) == 1
     assert result.comments[0].message == "Missing error handling"
     assert result.comments[0].location == "parser.py:45"
@@ -77,6 +79,7 @@ async def test_review_unparseable_json(agent, sample_request):
         return_value=("This is not JSON at all", _make_usage()))
     result = await agent.review(sample_request)
     assert not result.passed  # defaults to not passed on parse error
+    assert result.score == 30  # default score on parse failure
 
 
 async def test_test_pass(agent, sample_request):

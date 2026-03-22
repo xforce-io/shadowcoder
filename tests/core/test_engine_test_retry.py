@@ -73,7 +73,7 @@ async def test_test_retry_with_develop_recommendation(bus, store, task_mgr, conf
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="fixed code"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, comments=[], reviewer="mock"))
+        passed=True, score=95, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
@@ -104,7 +104,7 @@ async def test_test_retry_with_design_recommendation(bus, store, task_mgr, confi
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, comments=[], reviewer="mock"))
+        passed=True, score=95, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
@@ -142,7 +142,7 @@ async def test_test_retries_exhausted_blocked(bus, store, task_mgr, config):
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, comments=[], reviewer="mock"))
+        passed=True, score=95, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
@@ -172,6 +172,7 @@ async def test_test_recommendation_develop_fails_review_stops(bus, store, task_m
     agent.design = AsyncMock(return_value=DesignOutput(document="design"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
+        score=40,
         comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
         reviewer="mock",
     ))
@@ -196,7 +197,7 @@ async def test_test_event_includes_recommendation(bus, store, task_mgr, config):
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, comments=[], reviewer="mock"))
+        passed=True, score=95, comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 

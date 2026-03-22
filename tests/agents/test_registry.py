@@ -13,7 +13,7 @@ class FakeAgent(BaseAgent):
         return DevelopOutput(summary="ok")
 
     async def review(self, request):
-        return ReviewOutput(passed=True, reviewer="fake")
+        return ReviewOutput(passed=True, score=95, reviewer="fake")
 
     async def test(self, request):
         return TestOutput(report="ok", success=True)

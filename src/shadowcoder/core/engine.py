@@ -123,22 +123,23 @@ class Engine:
 
     async def _run_all_reviewers(self, issue, task, action, review_section_key):
         reviewer_names = self.config.get_reviewers(action)
-        all_passed = True
+        min_score = 100
         failed_reviewers = []
 
         for rname in reviewer_names:
             reviewer = self.agents.get(rname)
             request = AgentRequest(action="review", issue=issue,
-                context={"worktree_path": task.worktree_path})
+                context={"worktree_path": task.worktree_path,
+                         "latest_review": self._get_latest_review(issue.id, review_section_key)})
             try:
                 review = await self._review_with_retry(reviewer, request)
                 self._track_usage(issue.id, review.usage)
                 self.issue_store.append_review(issue.id, review_section_key, review)
-                await self.bus.publish(Message(MessageType.EVT_REVIEW_RESULT,
-                    {"issue_id": issue.id, "reviewer": rname,
-                     "passed": review.passed, "comments": len(review.comments)}))
-                if not review.passed:
-                    all_passed = False
+                min_score = min(min_score, review.score)
+                await self.bus.publish(Message(MessageType.EVT_REVIEW_RESULT, {
+                    "issue_id": issue.id, "reviewer": rname,
+                    "passed": review.score >= 70, "score": review.score,
+                    "comments": len(review.comments)}))
             except Exception:
                 failed_reviewers.append(rname)
                 logger.warning("Reviewer %s unavailable after retries", rname)
@@ -146,7 +147,7 @@ class Engine:
         if len(failed_reviewers) == len(reviewer_names):
             raise RuntimeError(f"All reviewers unavailable: {failed_reviewers}")
 
-        return all_passed
+        return min_score
 
     async def _run_with_review(self, issue, task, action, review_stage,
                                 success_status, section_key, review_section_key):
@@ -209,23 +210,32 @@ class Engine:
                 self.issue_store.transition_status(issue.id, IssueStatus[review_stage.upper()])
                 issue = self.issue_store.get(issue.id)
 
-                all_passed = await self._run_all_reviewers(issue, task, action, review_section_key)
+                min_score = await self._run_all_reviewers(issue, task, action, review_section_key)
 
-                if all_passed:
+                if min_score >= 90:
                     self.issue_store.transition_status(issue.id, success_status)
                     self._log(issue.id,
-                        f"{action_label} Review R{round_num} — PASSED → {success_status.value}")
+                        f"{action_label} Review R{round_num} — PASSED (score={min_score}) → {success_status.value}")
+                    task.status = TaskStatus.COMPLETED
+                    await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                        {"issue_id": issue.id, "task_id": task.task_id}))
+                    return
+                elif min_score >= 70:
+                    # Conditional pass — log deferred issues, proceed
+                    self._log(issue.id,
+                        f"{action_label} Review R{round_num} — 带条件通过 (score={min_score}) → {success_status.value}")
+                    self.issue_store.transition_status(issue.id, success_status)
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
 
-                # Summarize review rejection
+                # Fail — summarize review rejection
                 review_content = self.issue_store.get(issue.id).sections.get(review_section_key, "")
                 reject_lines = [l for l in review_content.split("\n") if "[HIGH]" in l]
                 reject_summary = "; ".join(l.strip()[:80] for l in reject_lines[-5:])
                 self._log(issue.id,
-                    f"{action_label} Review R{round_num} — NOT PASSED\n"
+                    f"{action_label} Review R{round_num} — NOT PASSED (score={min_score})\n"
                     f"HIGH issues: {reject_summary or '(see review section)'}")
 
                 issue = self.issue_store.get(issue.id)

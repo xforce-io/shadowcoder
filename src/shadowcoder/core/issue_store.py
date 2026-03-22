@@ -91,7 +91,7 @@ class IssueStore:
 
     def append_review(self, issue_id: int, section: str, review: ReviewOutput) -> None:
         # .md: only latest review summary (overwrite)
-        summary = f"{'PASSED' if review.passed else 'NOT PASSED'} ({len(review.comments)} comments)"
+        summary = f"{'PASSED' if review.score >= 70 else 'NOT PASSED'} (score={review.score}, {len(review.comments)} comments)"
         issue = self.get(issue_id)
         issue.sections[section] = summary
         self._save(issue)
@@ -137,7 +137,7 @@ class IssueStore:
 
     @staticmethod
     def _format_review(review: ReviewOutput) -> str:
-        lines = [f"**Reviewer: {review.reviewer}** — {'PASSED' if review.passed else 'NOT PASSED'}"]
+        lines = [f"**Reviewer: {review.reviewer}** — score: {review.score}/100 — {'PASSED' if review.score >= 70 else 'NOT PASSED'}"]
         for c in review.comments:
             loc = f" ({c.location})" if c.location else ""
             lines.append(f"- [{c.severity.value.upper()}]{loc} {c.message}")
