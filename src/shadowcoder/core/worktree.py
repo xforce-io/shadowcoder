@@ -20,30 +20,60 @@ class WorktreeManager:
             raise RuntimeError(f"git {args[0]} failed: {stderr.decode().strip()}")
         return stdout.decode()
 
-    async def create(self, repo_path: str, issue_id: int) -> str:
-        branch = f"shadowcoder/issue-{issue_id}"
-        wt_path = str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
-        # If worktree directory already exists, reuse it
+    def _worktree_path(self, repo_path: str, issue_id: int) -> str:
+        return str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
+
+    def _branch_name(self, issue_id: int) -> str:
+        return f"shadowcoder/issue-{issue_id}"
+
+    async def ensure(self, repo_path: str, issue_id: int) -> str:
+        """Ensure worktree exists for issue. Idempotent."""
+        wt_path = self._worktree_path(repo_path, issue_id)
+        branch = self._branch_name(issue_id)
+
+        # Already exists — return path
         if Path(wt_path).exists():
             return wt_path
-        # Prune stale worktree records (e.g., directory was manually deleted)
+
+        # Prune stale records
         await self._run_git(repo_path, "worktree", "prune")
-        # Try creating with new branch; if branch exists, use existing branch
+
+        # Try new branch first, then existing branch
         try:
             await self._run_git(repo_path, "worktree", "add", "-b", branch, wt_path)
         except RuntimeError:
-            # Branch already exists — try checkout existing branch
             try:
                 await self._run_git(repo_path, "worktree", "add", wt_path, branch)
             except RuntimeError:
-                # Branch exists and is checked out elsewhere — delete and recreate
+                # Branch checked out elsewhere — force cleanup and recreate
                 await self._run_git(repo_path, "branch", "-D", branch)
                 await self._run_git(repo_path, "worktree", "add", "-b", branch, wt_path)
         return wt_path
 
+    async def exists(self, repo_path: str, issue_id: int) -> bool:
+        """Check if worktree exists for issue."""
+        wt_path = self._worktree_path(repo_path, issue_id)
+        return Path(wt_path).exists()
+
+    async def cleanup(self, repo_path: str, issue_id: int, delete_branch: bool = False) -> None:
+        """Remove worktree and optionally delete the branch."""
+        wt_path = self._worktree_path(repo_path, issue_id)
+        branch = self._branch_name(issue_id)
+
+        if Path(wt_path).exists():
+            await self._run_git(repo_path, "worktree", "remove", "--force", wt_path)
+
+        await self._run_git(repo_path, "worktree", "prune")
+
+        if delete_branch:
+            try:
+                await self._run_git(repo_path, "branch", "-D", branch)
+            except RuntimeError:
+                pass  # branch may not exist
+
     async def remove(self, repo_path: str, issue_id: int) -> None:
-        wt_path = str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
-        await self._run_git(repo_path, "worktree", "remove", wt_path)
+        """Backward compat — alias for cleanup without branch deletion."""
+        await self.cleanup(repo_path, issue_id)
 
     async def list(self, repo_path: str) -> list[str]:
         output = await self._run_git(repo_path, "worktree", "list", "--porcelain")

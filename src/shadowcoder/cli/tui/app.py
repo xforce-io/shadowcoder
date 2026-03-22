@@ -78,6 +78,8 @@ class ShadowCoderApp(App):
                 return Message(MessageType.CMD_APPROVE, {"issue_id": int(ref.lstrip("#"))})
             case ["cancel", ref]:
                 return Message(MessageType.CMD_CANCEL, {"issue_id": int(ref.lstrip("#"))})
+            case ["cleanup", ref]:
+                return Message(MessageType.CMD_CLEANUP, {"issue_id": int(ref.lstrip("#"))})
             case _:
                 log.write(f"[red]未知命令: {cmd}[/red]")
                 return None

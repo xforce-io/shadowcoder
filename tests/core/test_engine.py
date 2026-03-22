@@ -32,7 +32,9 @@ def store(tmp_repo, config):
 @pytest.fixture
 def mock_worktree():
     wt = AsyncMock()
-    wt.create = AsyncMock(return_value="/tmp/wt")
+    wt.ensure = AsyncMock(return_value="/tmp/wt")
+    wt.exists = AsyncMock(return_value=True)
+    wt.cleanup = AsyncMock()
     return wt
 
 
@@ -295,3 +297,40 @@ async def test_info_issue(bus, store, task_mgr, registry_with, config):
 
     assert len(events) == 1
     assert events[0].payload["issue"]["title"] == "Test"
+
+
+async def test_cleanup_done_issue(bus, store, task_mgr, mock_worktree, registry_with, config):
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    status_events = []
+    bus.subscribe(MessageType.EVT_STATUS_CHANGED, lambda m: status_events.append(m))
+
+    issue = store.create("Test")
+    # Transition to DONE
+    store.transition_status(issue.id, IssueStatus.DESIGNING)
+    store.transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(issue.id, IssueStatus.APPROVED)
+    store.transition_status(issue.id, IssueStatus.DEVELOPING)
+    store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
+    store.transition_status(issue.id, IssueStatus.TESTING)
+    store.transition_status(issue.id, IssueStatus.DONE)
+
+    await bus.publish(Message(MessageType.CMD_CLEANUP, {"issue_id": 1}))
+
+    mock_worktree.cleanup.assert_called_once_with("/tmp/repo", 1, delete_branch=False)
+    cleaned_up_events = [e for e in status_events if e.payload.get("status") == "cleaned_up"]
+    assert len(cleaned_up_events) == 1
+
+
+async def test_cleanup_non_done_issue(bus, store, task_mgr, mock_worktree, registry_with, config):
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    error_events = []
+    bus.subscribe(MessageType.EVT_ERROR, lambda m: error_events.append(m))
+
+    store.create("Test")
+    # Issue is in CREATED status, not DONE or CANCELLED
+
+    await bus.publish(Message(MessageType.CMD_CLEANUP, {"issue_id": 1}))
+
+    mock_worktree.cleanup.assert_not_called()
+    assert len(error_events) == 1
+    assert "not DONE or CANCELLED" in error_events[0].payload["message"]

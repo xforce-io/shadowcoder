@@ -18,6 +18,7 @@ class MessageType(Enum):
     CMD_RESUME = "cmd.resume"
     CMD_APPROVE = "cmd.approve"
     CMD_CANCEL = "cmd.cancel"
+    CMD_CLEANUP = "cmd.cleanup"
 
     EVT_ISSUE_CREATED = "evt.issue_created"
     EVT_STATUS_CHANGED = "evt.status_changed"

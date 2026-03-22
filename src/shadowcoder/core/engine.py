@@ -34,6 +34,7 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_CANCEL, self._on_cancel)
         self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
         self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
+        self.bus.subscribe(MessageType.CMD_CLEANUP, self._on_cleanup)
 
     def _log(self, issue_id: int, entry: str):
         """Append to 航海日志."""
@@ -219,6 +220,7 @@ class Engine:
                     self.issue_store.transition_status(issue.id, IssueStatus.DONE)
                     self._log(issue.id,
                         f"Test R{attempt} — PASSED ({passed}/{total}) → DONE")
+                    self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
@@ -352,3 +354,23 @@ class Engine:
                       "status": issue.status.value, "priority": issue.priority,
                       "tags": issue.tags, "assignee": issue.assignee,
                       "sections": list(issue.sections.keys())}}))
+
+    async def _on_cleanup(self, msg):
+        issue_id = msg.payload["issue_id"]
+        delete_branch = msg.payload.get("delete_branch", False)
+        issue = self.issue_store.get(issue_id)
+
+        if issue.status not in (IssueStatus.DONE, IssueStatus.CANCELLED):
+            await self.bus.publish(Message(MessageType.EVT_ERROR, {
+                "message": f"issue #{issue_id} is not DONE or CANCELLED, cannot cleanup"}))
+            return
+
+        wt_manager = self.task_manager.worktree_manager
+        if await wt_manager.exists(self.repo_path, issue_id):
+            await wt_manager.cleanup(self.repo_path, issue_id, delete_branch=delete_branch)
+            self._log(issue_id, f"Worktree 已清理 (delete_branch={delete_branch})")
+            await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED, {
+                "issue_id": issue_id, "status": "cleaned_up"}))
+        else:
+            await self.bus.publish(Message(MessageType.EVT_ERROR, {
+                "message": f"issue #{issue_id} has no worktree to clean up"}))

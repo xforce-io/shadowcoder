@@ -9,7 +9,7 @@ from datetime import datetime
 @pytest.fixture
 def mock_worktree():
     wt = AsyncMock()
-    wt.create = AsyncMock(return_value="/tmp/worktree/issue-1")
+    wt.ensure = AsyncMock(return_value="/tmp/worktree/issue-1")
     return wt
 
 
@@ -37,7 +37,7 @@ async def test_create_task(manager, sample_issue):
 
 async def test_create_calls_worktree(manager, sample_issue, mock_worktree):
     await manager.create(sample_issue, "/tmp/repo", "design", "claude-code")
-    mock_worktree.create.assert_called_once_with("/tmp/repo", 1)
+    mock_worktree.ensure.assert_called_once_with("/tmp/repo", 1)
 
 
 async def test_list_active(manager, sample_issue):

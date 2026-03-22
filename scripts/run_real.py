@@ -9,6 +9,8 @@ Examples:
   python scripts/run_real.py ~/lab/coder-playground test 1
   python scripts/run_real.py ~/lab/coder-playground info 1
   python scripts/run_real.py ~/lab/coder-playground list
+  python scripts/run_real.py ~/lab/coder-playground cleanup 1
+  python scripts/run_real.py ~/lab/coder-playground cleanup 1 --delete-branch
 """
 import asyncio
 import sys
@@ -93,6 +95,13 @@ async def main():
 
     elif command == "cancel":
         await bus.publish(Message(MessageType.CMD_CANCEL, {"issue_id": int(args[0])}))
+
+    elif command == "cleanup":
+        delete_branch = "--delete-branch" in args
+        await bus.publish(Message(MessageType.CMD_CLEANUP, {
+            "issue_id": int(args[0]),
+            "delete_branch": delete_branch,
+        }))
 
     else:
         print(f"Unknown command: {command}")
