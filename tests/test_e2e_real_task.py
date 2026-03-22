@@ -18,7 +18,7 @@ import frontmatter as fm
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -453,6 +453,9 @@ class RealisticAgent(BaseAgent):
         self._develop_round = 0
         self._review_design_round = 0
         self._review_develop_round = 0
+
+    async def preflight(self, request: AgentRequest) -> PreflightOutput:
+        return PreflightOutput(feasibility="high", estimated_complexity="moderate")
 
     async def design(self, request: AgentRequest) -> DesignOutput:
         self._design_round += 1

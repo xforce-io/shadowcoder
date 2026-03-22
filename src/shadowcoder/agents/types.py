@@ -68,6 +68,15 @@ class TestOutput:
     usage: AgentUsage | None = None
 
 
+@dataclass
+class PreflightOutput:
+    feasibility: str              # "high" / "medium" / "low"
+    estimated_complexity: str     # "simple" / "moderate" / "complex" / "very_complex"
+    risks: list[str] = field(default_factory=list)
+    tech_stack_recommendation: str | None = None
+    usage: AgentUsage | None = None
+
+
 class AgentActionFailed(Exception):
     """Agent tried but could not complete the action."""
     def __init__(self, message: str, partial_output: str = ""):

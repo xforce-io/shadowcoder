@@ -266,6 +266,33 @@ class Engine:
 
     async def _on_design(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
+
+        # Run preflight if this is the first design attempt (no existing design)
+        if "设计" not in issue.sections or not issue.sections["设计"]:
+            agent = self.agents.get(issue.assignee or "default")
+            request = AgentRequest(action="preflight", issue=issue,
+                context={"worktree_path": None})
+            try:
+                pf = await agent.preflight(request)
+                self._track_usage(issue.id, pf.usage)
+                pf_summary = (f"Feasibility: {pf.feasibility} | "
+                             f"Complexity: {pf.estimated_complexity} | "
+                             f"Risks: {', '.join(pf.risks) or 'none identified'}")
+                if pf.tech_stack_recommendation:
+                    pf_summary += f" | Tech: {pf.tech_stack_recommendation}"
+                self._log(issue.id, f"Preflight 评估\n{pf_summary}")
+
+                if pf.feasibility == "low":
+                    self._log(issue.id, "Preflight: feasibility=low → BLOCKED，等待人类确认")
+                    self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+                        "issue_id": issue.id,
+                        "reason": f"Preflight: low feasibility — {pf_summary}"}))
+                    return
+            except Exception as e:
+                self._log(issue.id, f"Preflight 跳过 (error: {e})")
+
+        # Continue with normal design flow
         task = await self.task_manager.create(issue, repo_path=self.repo_path,
             action="design", agent_name=issue.assignee or "default")
         await self._run_with_review(issue, task, action="design",

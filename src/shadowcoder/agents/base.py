@@ -4,13 +4,17 @@ import asyncio
 from abc import ABC, abstractmethod
 
 from shadowcoder.agents.types import (
-    AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
 )
 
 
 class BaseAgent(ABC):
     def __init__(self, config: dict):
         self.config = config
+
+    @abstractmethod
+    async def preflight(self, request: AgentRequest) -> PreflightOutput:
+        ...
 
     @abstractmethod
     async def design(self, request: AgentRequest) -> DesignOutput:

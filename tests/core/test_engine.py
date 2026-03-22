@@ -8,7 +8,7 @@ from shadowcoder.core.models import IssueStatus, TaskStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
     AgentRequest, AgentActionFailed, AgentUsage,
-    DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
     ReviewComment, Severity,
 )
 from shadowcoder.agents.registry import AgentRegistry
@@ -46,6 +46,7 @@ def task_mgr(mock_worktree):
 @pytest.fixture
 def passing_agent():
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="develop output"))
     agent.review = AsyncMock(return_value=ReviewOutput(passed=True, score=95, comments=[], reviewer="mock"))
@@ -95,6 +96,7 @@ async def test_design_happy_path(bus, store, task_mgr, registry_with, config):
 
 async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
@@ -117,6 +119,7 @@ async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
 
 async def test_design_agent_failure(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(side_effect=AgentActionFailed("design failed", partial_output="err"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -132,6 +135,7 @@ async def test_design_agent_failure(bus, store, task_mgr, config):
 
 async def test_design_agent_exception(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(side_effect=RuntimeError("crash"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -198,6 +202,7 @@ async def test_cancel(bus, store, task_mgr, registry_with, config):
 
 async def test_approve_blocked(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=False,
@@ -233,6 +238,7 @@ async def test_create_issue(bus, store, task_mgr, registry_with, config):
 async def test_resume_blocked_design(bus, store, task_mgr, config):
     call_count = 0
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
 
     async def design_side_effect(request):
         return DesignOutput(document="output")
@@ -263,6 +269,7 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
 
 async def test_all_reviewers_unavailable(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(side_effect=RuntimeError("reviewer crash"))
     reg = MagicMock()
@@ -369,6 +376,7 @@ worktree:
     expensive_usage = AgentUsage(input_tokens=1000, output_tokens=500,
                                  duration_ms=2000, cost_usd=1.00)
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design", usage=expensive_usage))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -390,6 +398,7 @@ worktree:
 async def test_conditional_pass(bus, store, task_mgr, config):
     """Review returns score=75 (conditional pass) — issue should still proceed to next status."""
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         passed=True,
@@ -412,3 +421,34 @@ async def test_conditional_pass(bus, store, task_mgr, config):
     # score=75 >= 70, so should conditionally pass and proceed to APPROVED
     assert issue.status == IssueStatus.APPROVED
     assert len(completed_events) == 1
+
+
+async def test_design_runs_preflight(bus, store, task_mgr, registry_with, config):
+    """First design should run preflight before starting design loop."""
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    store.create("Test")
+    await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+    issue = store.get(1)
+    assert issue.status == IssueStatus.APPROVED
+    # Preflight should be in the log
+    log = store.get_log(1)
+    assert "Preflight" in log
+
+
+async def test_design_low_feasibility_blocks(bus, store, task_mgr, config):
+    """Low feasibility preflight should block the issue."""
+    agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(
+        feasibility="low", estimated_complexity="very_complex",
+        risks=["Haskell not suitable for concurrent MVCC"]))
+    agent.design = AsyncMock()  # should not be called
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    store.create("Test")
+    await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.BLOCKED
+    agent.design.assert_not_called()

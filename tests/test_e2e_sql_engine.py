@@ -16,7 +16,7 @@ import frontmatter as fm
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -702,6 +702,9 @@ class StateDrivenAgent(BaseAgent):
                             resolved.add(dep)
                             changed = True
         return resolved
+
+    async def preflight(self, request: AgentRequest) -> PreflightOutput:
+        return PreflightOutput(feasibility="high", estimated_complexity="moderate")
 
     async def design(self, request: AgentRequest) -> DesignOutput:
         self.execute_log.append(request.action)

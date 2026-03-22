@@ -1,11 +1,14 @@
 import pytest
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import DesignOutput, DevelopOutput, ReviewOutput, TestOutput
+from shadowcoder.agents.types import DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.config import Config
 
 
 class FakeAgent(BaseAgent):
+    async def preflight(self, request):
+        return PreflightOutput(feasibility="high", estimated_complexity="moderate")
+
     async def design(self, request):
         return DesignOutput(document="ok")
 

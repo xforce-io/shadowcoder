@@ -8,8 +8,8 @@ from textwrap import dedent
 
 from shadowcoder.agents.base import BaseAgent
 from shadowcoder.agents.types import (
-    AgentRequest, AgentUsage, DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
-    ReviewComment, Severity,
+    AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput,
+    ReviewOutput, TestOutput, ReviewComment, Severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +114,39 @@ class ClaudeCodeAgent(BaseAgent):
         if latest_review:
             parts.append(f"\n--- Latest Review Feedback ---\n{latest_review}")
         return "\n".join(parts)
+
+    async def preflight(self, request: AgentRequest) -> PreflightOutput:
+        context = self._build_context(request)
+        system = dedent("""\
+            You are a senior technical advisor. Quickly assess the feasibility
+            of this project. Do NOT produce a full design.
+
+            Output ONLY JSON:
+            {
+                "feasibility": "high" | "medium" | "low",
+                "estimated_complexity": "simple" | "moderate" | "complex" | "very_complex",
+                "risks": ["risk 1", "risk 2", ...],
+                "tech_stack_recommendation": "optional suggestion"
+            }
+
+            Assessment criteria:
+            - feasibility: can this realistically be built with the specified tech stack?
+            - complexity: how many subsystems, how much integration work?
+            - risks: what could go wrong or take much longer than expected?
+        """)
+        prompt = f"{context}\n\nAssess feasibility. Be brief and direct."
+        result, usage = await self._run_claude_with_usage(prompt, cwd=request.context.get("worktree_path"), system_prompt=system)
+        try:
+            data = self._extract_json(result)
+            return PreflightOutput(
+                feasibility=data.get("feasibility", "medium"),
+                estimated_complexity=data.get("estimated_complexity", "moderate"),
+                risks=data.get("risks", []),
+                tech_stack_recommendation=data.get("tech_stack_recommendation"),
+                usage=usage)
+        except Exception:
+            return PreflightOutput(feasibility="medium", estimated_complexity="moderate",
+                                   risks=["Could not assess — preflight parse failed"], usage=usage)
 
     async def design(self, request: AgentRequest) -> DesignOutput:
         cwd = request.context.get("worktree_path")

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, ReviewOutput, TestOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -38,6 +38,9 @@ class E2EAgent(BaseAgent):
         """Make the next N review calls return NOT PASSED."""
         self._review_fail_count = n
         self._review_call_counter = 0
+
+    async def preflight(self, request: AgentRequest) -> PreflightOutput:
+        return PreflightOutput(feasibility="high", estimated_complexity="moderate")
 
     async def design(self, request: AgentRequest) -> DesignOutput:
         self.execute_calls.append(request)

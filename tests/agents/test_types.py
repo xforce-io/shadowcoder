@@ -1,6 +1,6 @@
 from shadowcoder.agents.types import (
     Severity, ReviewComment, AgentUsage,
-    DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
     AgentRequest, AgentActionFailed,
 )
 from shadowcoder.core.models import Issue, IssueStatus
@@ -83,6 +83,19 @@ def test_agent_request():
     r = AgentRequest(action="design", issue=issue, context={"worktree_path": "/tmp"})
     assert r.action == "design"
     assert r.prompt_override is None
+
+
+def test_preflight_output():
+    o = PreflightOutput(feasibility="high", estimated_complexity="complex",
+                        risks=["risk1", "risk2"])
+    assert o.feasibility == "high"
+    assert len(o.risks) == 2
+    assert o.tech_stack_recommendation is None
+
+
+def test_preflight_output_defaults():
+    o = PreflightOutput(feasibility="medium", estimated_complexity="simple")
+    assert o.risks == []
 
 
 def test_agent_action_failed():

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from shadowcoder.agents.claude_code import ClaudeCodeAgent
-from shadowcoder.agents.types import AgentRequest, AgentUsage, DesignOutput, DevelopOutput, ReviewOutput, TestOutput
+from shadowcoder.agents.types import AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput
 from shadowcoder.core.models import Issue, IssueStatus
 from datetime import datetime
 
@@ -23,6 +23,15 @@ def sample_request():
 def _make_usage(input_tokens=100, output_tokens=50, cost_usd=0.001):
     return AgentUsage(input_tokens=input_tokens, output_tokens=output_tokens,
                       duration_ms=500, cost_usd=cost_usd)
+
+
+async def test_preflight(agent, sample_request):
+    agent._run_claude_with_usage = AsyncMock(return_value=(
+        '{"feasibility": "high", "estimated_complexity": "complex", "risks": ["r1"]}',
+        AgentUsage()))
+    result = await agent.preflight(sample_request)
+    assert result.feasibility == "high"
+    assert len(result.risks) == 1
 
 
 async def test_design_returns_output(agent, sample_request):

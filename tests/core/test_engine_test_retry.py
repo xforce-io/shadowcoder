@@ -9,7 +9,7 @@ from shadowcoder.core.models import IssueStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
     AgentRequest, AgentActionFailed,
-    DesignOutput, DevelopOutput, ReviewOutput, TestOutput,
+    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
     ReviewComment, Severity,
 )
 
@@ -100,6 +100,7 @@ async def test_test_retry_with_design_recommendation(bus, store, task_mgr, confi
         return TestOutput(report="all pass", success=True)
 
     agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.test = AsyncMock(side_effect=test_side_effect)
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
