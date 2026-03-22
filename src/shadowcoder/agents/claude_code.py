@@ -235,7 +235,7 @@ class ClaudeCodeAgent(BaseAgent):
                 severity = _SEVERITY_MAP.get(c.get("severity", "medium"), Severity.MEDIUM)
                 comments.append(ReviewComment(
                     severity=severity,
-                    message=c.get("message", ""),
+                    message=c.get("message") or c.get("description") or c.get("issue") or str(c),
                     location=c.get("location"),
                 ))
             return ReviewOutput(
