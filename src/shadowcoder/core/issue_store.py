@@ -137,9 +137,15 @@ class IssueStore:
         sections: dict[str, str] = {}
         current_key: str | None = None
         lines: list[str] = []
+        in_code_block = False
         for line in content.split("\n"):
-            # Only H1 headers (# ) are section delimiters, not ## or ###
-            if line.startswith("# ") and not line.startswith("## "):
+            # Track fenced code blocks — don't parse headers inside them
+            if line.startswith("```"):
+                in_code_block = not in_code_block
+            # Only H1 headers (# ) outside code blocks are section delimiters
+            if (not in_code_block
+                    and line.startswith("# ")
+                    and not line.startswith("## ")):
                 if current_key:
                     sections[current_key] = "\n".join(lines).strip()
                 current_key = line[2:].strip()
