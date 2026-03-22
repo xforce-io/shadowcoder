@@ -30,6 +30,18 @@ class IssueStore:
     def _log_path(self, issue_id: int) -> Path:
         return self.base / f"{issue_id:04d}.log.md"
 
+    def _versions_dir(self, issue_id: int) -> Path:
+        return self.base / f"{issue_id:04d}.versions"
+
+    def save_version(self, issue_id: int, action: str, round_num: int, content: str) -> str:
+        """Save a versioned snapshot of agent output. Returns the filename."""
+        vdir = self._versions_dir(issue_id)
+        vdir.mkdir(parents=True, exist_ok=True)
+        filename = f"{action}_r{round_num}.md"
+        path = vdir / filename
+        path.write_text(content, encoding="utf-8")
+        return filename
+
     def create(self, title: str, priority: str = "medium",
                tags: list[str] | None = None,
                description: str | None = None) -> Issue:

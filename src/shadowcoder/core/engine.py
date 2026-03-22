@@ -202,10 +202,13 @@ class Engine:
                         "reason": f"budget exceeded: {summary}"}))
                     return
 
+                # Archive version before overwriting
+                vfile = self.issue_store.save_version(
+                    issue.id, action, round_num, content)
                 self.issue_store.update_section(issue.id, section_key, content)
                 self._log(issue.id,
                     f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
-                    f"内容长度: {len(content)} 字符")
+                    f"内容长度: {len(content)} 字符, 存档: {vfile}")
 
                 self.issue_store.transition_status(issue.id, IssueStatus[review_stage.upper()])
                 issue = self.issue_store.get(issue.id)
