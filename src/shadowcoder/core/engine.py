@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 
-from shadowcoder.agents.types import AgentRequest, AgentActionFailed, AgentUsage
+from shadowcoder.agents.types import AgentRequest, AgentActionFailed, AgentUsage, TestOutput
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -66,6 +67,24 @@ class Engine:
                 f"Tokens: {input_t:,} in + {output_t:,} out | "
                 f"Cost: ${cost:.4f} | "
                 f"Time: {total_duration:.1f}s")
+
+    async def _verify_tests(self, worktree_path: str) -> tuple[bool, str]:
+        """Independently run the configured test command and check exit code.
+        Returns (passed, output). This overrides agent's self-report."""
+        test_cmd = self.config.get_test_command()
+        if not test_cmd or not worktree_path:
+            return True, ""  # no command configured, trust agent
+
+        proc = await asyncio.create_subprocess_shell(
+            test_cmd,
+            cwd=worktree_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        stdout, _ = await proc.communicate()
+        output = stdout.decode("utf-8", errors="replace")
+        passed = proc.returncode == 0
+        return passed, output
 
     def _get_latest_review(self, issue_id: int, review_section_key: str) -> str:
         """Extract the latest full review from the log file."""
@@ -348,19 +367,36 @@ class Engine:
                 self.issue_store.update_section(issue.id, "测试", output.report)
 
                 if output.success:
-                    passed = output.passed_count if output.passed_count is not None else "?"
-                    total = output.total_count if output.total_count is not None else "?"
-                    self.issue_store.transition_status(issue.id, IssueStatus.DONE)
-                    self._log(issue.id,
-                        f"Test R{attempt} — PASSED ({passed}/{total}) → DONE")
-                    self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
-                    self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
-                    task.status = TaskStatus.COMPLETED
-                    await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
-                        {"issue_id": issue.id, "task_id": task.task_id}))
-                    return
+                    # Independent verification: run test command if configured
+                    verified, verify_output = await self._verify_tests(task.worktree_path)
+                    if not verified:
+                        # Agent said PASS but tests actually failed — override
+                        self._log(issue.id,
+                            f"Test R{attempt} — Agent 报告 PASSED，但独立验证 FAILED")
+                        self.issue_store.update_section(issue.id, "测试",
+                            output.report + f"\n\n## 独立验证 FAILED\n```\n{verify_output[-2000:]}\n```")
+                        output = TestOutput(
+                            report=output.report, success=False,
+                            recommendation="develop",
+                            passed_count=output.passed_count,
+                            total_count=output.total_count,
+                            usage=output.usage)
+                        # Fall through to failure handling below
+                    else:
+                        passed = output.passed_count if output.passed_count is not None else "?"
+                        total = output.total_count if output.total_count is not None else "?"
+                        verify_note = ", 独立验证通过" if verify_output else ""
+                        self._log(issue.id,
+                            f"Test R{attempt} — PASSED ({passed}/{total}){verify_note} → DONE")
+                        self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
+                        self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
+                        self.issue_store.transition_status(issue.id, IssueStatus.DONE)
+                        task.status = TaskStatus.COMPLETED
+                        await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                            {"issue_id": issue.id, "task_id": task.task_id}))
+                        return
 
-                # --- Test failed: check recommendation ---
+                # --- Test failed (or verification override): check recommendation ---
                 recommendation = output.recommendation
                 passed = output.passed_count if output.passed_count is not None else "?"
                 total = output.total_count if output.total_count is not None else "?"

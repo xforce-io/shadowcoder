@@ -45,3 +45,7 @@ class Config:
 
     def get_log_level(self) -> str:
         return self._data.get("logging", {}).get("level", "INFO")
+
+    def get_test_command(self) -> str | None:
+        """Get the test command to verify results independently of agent."""
+        return self._data.get("build", {}).get("test_command")
