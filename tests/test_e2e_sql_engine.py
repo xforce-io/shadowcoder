@@ -600,7 +600,16 @@ BENCHMARK_ITEMS = {
 # ---------------------------------------------------------------------------
 
 class StateDrivenAgent(BaseAgent):
-    """Reads issue state, decides what to output. No round counting."""
+    """Reads issue state, decides what to output. No round counting.
+
+    Simulates realistic agent behavior:
+    - Can only absorb limited new features per round (max_new_per_round)
+    - Develop may not implement all designed features at once
+    - Forces the system to iterate naturally
+    """
+
+    MAX_NEW_FEATURES_PER_DESIGN_ROUND = 3
+    MAX_NEW_FEATURES_PER_DEVELOP_ROUND = 2
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -709,29 +718,36 @@ class StateDrivenAgent(BaseAgent):
         return AgentResponse(content=f"[{request.action}]", success=True)
 
     def _do_design(self, issue, requirements):
-        """Produce design based on current state."""
+        """Produce design based on current state.
+        Can only add limited new features per round."""
         existing_design = issue.sections.get("设计", "")
         review_comments = issue.sections.get("Design Review", "")
 
-        # Start with what we already have
         already_included = self._included_features(existing_design)
-
-        # What does the reviewer say is missing?
         reviewer_wants = self._mentioned_in_review(review_comments)
-
-        # Base features always included
         base_features = {"parser_basic", "storage", "executor"}
 
-        # Build target feature set
-        target = base_features | already_included | reviewer_wants
-        target = self._resolve_deps(target)
+        # Features we want to add (that we don't already have)
+        candidates = (reviewer_wants | base_features) - already_included
+        # Resolve deps for candidates
+        candidates = self._resolve_deps(candidates) - already_included
+
+        # Cap: only add up to MAX_NEW per round
+        # Prioritize by dependency order (features with fewer deps first)
+        feature_order = ["parser_basic", "storage", "executor",
+                         "aggregation", "null_semantics", "parser_advanced",
+                         "btree_index", "query_planner",
+                         "transaction", "error_handling", "performance"]
+        new_this_round = set()
+        for fname in feature_order:
+            if fname in candidates and len(new_this_round) < self.MAX_NEW_FEATURES_PER_DESIGN_ROUND:
+                new_this_round.add(fname)
+
+        target = already_included | new_this_round
 
         # Generate design content
         sections = ["## SQL Database Engine — Design Document\n"]
-        for fname in ["parser_basic", "parser_advanced", "aggregation",
-                      "null_semantics", "storage", "btree_index",
-                      "query_planner", "executor", "transaction",
-                      "error_handling", "performance"]:
+        for fname in feature_order:
             if fname in target:
                 sections.append(DESIGN_FEATURES[fname]["content"])
 
@@ -740,29 +756,41 @@ class StateDrivenAgent(BaseAgent):
                              metadata={"included_features": sorted(target)})
 
     def _do_develop(self, issue, requirements):
-        """Produce implementation based on design and review feedback."""
+        """Produce implementation based on design and review feedback.
+        Can only add limited new features per round.
+        Only implements features that are in the design."""
         design = issue.sections.get("设计", "")
         existing_impl = issue.sections.get("开发步骤", "")
         review_comments = issue.sections.get("Dev Review", "")
+        test_results = issue.sections.get("测试", "")
 
-        # What's designed?
         designed = self._included_features(design)
-
-        # What's already implemented?
         already_impl = self._included_features(existing_impl)
-
-        # What does reviewer say is missing/broken?
         reviewer_wants = self._mentioned_in_review(review_comments)
 
-        # Implement what's designed + what reviewer asks for
-        target = designed | reviewer_wants
-        target = self._resolve_deps(target)
+        # Also check test failure analysis for mentioned features
+        test_wants = self._mentioned_in_review(test_results)
+
+        # Can only implement what's designed
+        candidates = (designed | reviewer_wants | test_wants) - already_impl
+        candidates = candidates & designed  # can't implement what's not designed
+        candidates = self._resolve_deps(candidates) - already_impl
+        candidates = candidates & designed  # re-filter after deps
+
+        # Cap: only add limited features per round
+        feature_order = ["parser_basic", "storage", "executor",
+                         "aggregation", "null_semantics", "parser_advanced",
+                         "btree_index", "query_planner",
+                         "transaction", "error_handling", "performance"]
+        new_this_round = set()
+        for fname in feature_order:
+            if fname in candidates and len(new_this_round) < self.MAX_NEW_FEATURES_PER_DEVELOP_ROUND:
+                new_this_round.add(fname)
+
+        target = already_impl | new_this_round
 
         sections = ["## SQL Database Engine — Implementation\n"]
-        for fname in ["parser_basic", "parser_advanced", "aggregation",
-                      "null_semantics", "storage", "btree_index",
-                      "query_planner", "executor", "transaction",
-                      "error_handling", "performance"]:
+        for fname in feature_order:
             if fname in target and fname in DEVELOP_FEATURES:
                 sections.append(DEVELOP_FEATURES[fname])
 
