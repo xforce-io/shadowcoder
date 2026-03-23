@@ -180,30 +180,68 @@ Acceptance tests to implement (from reviewer):
   - test_null_in_subquery: SELECT 2 IN (1, NULL) 应返回 UNKNOWN
   - test_deadlock_victim: 两个事务互锁时应选择代价最小的回滚
 
-You must write executable tests for each of these. Do not skip any.
+You must write executable tests for each of these.
+Place them in the project's existing test directory, following the project's
+test conventions and style. Do not create a separate acceptance/ directory.
+Do not skip any.
 ```
+
+#### 测试放在项目原有结构中（不侵入）
+
+Reviewer 提出的 test specs 只存在 `.shadowcoder/issues/0001.feedback.json` 中。
+实际测试代码由 developer **按项目约定放到项目的 tests/ 目录里**：
+
+```
+repo/
+  tests/                    # 项目原有测试（不动）
+    test_parser.rs          # 原有
+    test_executor.rs        # 原有
+    test_null_semantics.rs  # developer 新增（来自 reviewer 规约）
+    test_deadlock.rs        # developer 新增（来自 reviewer 规约）
+  .shadowcoder/
+    issues/
+      0001.feedback.json    # reviewer 的 test specs（规约，不是代码）
+```
+
+不额外创建 `tests/acceptance/` 目录。新增的测试和原有测试混在一起，
+遵守同样的风格和约定。issue DONE 后，这些测试就是项目的一部分。
+
+这对从零开始和成熟 repo 都适用：
+- **从零**：tests/ 目录本来就是空的，developer 创建并组织
+- **成熟 repo**：tests/ 已有结构和风格，developer 按原有约定添加
 
 #### Engine 验证
 
-Engine 在 develop 后检查 test output 中是否包含每个 proposed test 的 name：
+Engine 做两层 symbolic 验证：
 
 ```python
-def _verify_acceptance_tests(self, test_output: str,
-                              proposed_tests: list[TestCase]) -> list[str]:
-    """返回未实现的测试名列表。"""
+async def _verify_after_develop(self, worktree_path, proposed_tests):
+    # 1. 运行全部测试（原有 + 新增），检查 exit code
+    passed, output = await self._verify_tests(worktree_path)
+    if not passed:
+        return False, "tests failed", output
+
+    # 2. 检查 reviewer 规约的每个 test name 是否出现在测试输出中
     missing = []
     for tc in proposed_tests:
-        if tc.name not in test_output:
+        if tc.name not in output:
             missing.append(tc.name)
-    return missing
+    if missing:
+        return False, f"acceptance tests not implemented: {missing}", output
+
+    return True, "all tests passed", output
 ```
 
-缺失的测试 → 自动 reject（不进入 review，直接回到 develop）。
+- 第一层：exit code = 0（原有测试不回归 + 新测试通过）
+- 第二层：每个 acceptance test name 出现在输出中（developer 确实实现了）
+
+缺失测试或回归失败 → 自动回到 develop，不进入 review。
 
 #### 测试只增不减
 
 所有轮次 reviewer 提出的 TestCase 累积存储在 `0001.feedback.json` 中。
 每轮 develop 都必须通过全部历史 acceptance tests，不只是最新一轮的。
+这是防止 catastrophic forgetting 的 symbolic 约束。
 
 ## 数据存储
 
