@@ -1,25 +1,80 @@
 # ShadowCoder
 
-An agent-based issue management and development system. Define requirements, and let AI agents design, implement, review, test, and iterate — automatically.
+A neural-symbolic self-evolving development system. AI agents generate code (neural), while structured review scoring, state machines, and deterministic test verification (symbolic) drive iterative improvement — until the output converges to meet requirements.
 
-## What It Does
+## Core Idea
 
-ShadowCoder manages the full development lifecycle for an issue:
+Traditional software development relies on humans to iterate between writing code and verifying it. ShadowCoder automates this loop:
+
+```
+         generate              verify              feedback
+  Agent ──────────→ Code ──────────→ Score ──────────→ Agent
+    ↑                                                    │
+    └────────────── iterate until converged ──────────────┘
+```
+
+This is structurally identical to a neural-symbolic training loop:
+
+| Training Concept | ShadowCoder Equivalent |
+|------------------|----------------------|
+| Forward pass | Agent generates design/code |
+| Loss function | Review score (0-100) + test exit code |
+| Backpropagation | Review feedback injected into next context |
+| Gradient clipping | Per-round feature capacity limit |
+| Early stopping | Max rounds reached, escalate to human |
+| Curriculum | Staged: preflight → design → develop → test |
+| Ground truth oracle | Independent test verification (`cargo test`, `go test`) |
+
+The key difference from model training: ShadowCoder optimizes the **output artifact** (code), not the model weights. It is a test-time compute system — improving quality through inference-time iteration rather than training.
+
+## The Loop
 
 ```
 create → preflight → design ⇄ review → develop ⇄ review → test → done
-                                  ↑                          |
+                                  ↑                          │
                                   └──── auto-route on fail ──┘
 ```
 
-Each stage is executed by a pluggable AI agent (currently Claude Code via CLI). Reviewers are also agents. The system iterates until the work meets quality standards or escalates to a human.
+Each stage:
 
-Key behaviors:
-- **Automated review loops** with scoring (0-100). Score >= 90 passes, 70-89 passes conditionally, < 70 retries.
-- **Test failure routing**: when tests fail, the agent analyzes the cause and recommends going back to `develop` or `design`.
-- **Independent test verification**: Engine runs your test command (`cargo test`, `go test ./...`, etc.) and overrides the agent's self-report if tests actually fail.
-- **Preflight check**: before design begins, a quick feasibility assessment flags risks early.
-- **Full audit trail**: every action is logged to a separate `.log.md` timeline file, and each round's output is archived in `.versions/`.
+- **Preflight**: Quick feasibility assessment. Low feasibility blocks before wasting compute.
+- **Design**: Agent produces architecture document. Reviewer scores it.
+  - Score >= 90: pass. 70-89: conditional pass. < 70: retry with feedback.
+- **Develop**: Agent writes actual code in an isolated git worktree. Reviewer scores it.
+- **Test**: Agent runs tests. Then Engine independently runs the configured test command and checks the exit code. Agent's self-report is overridden if the real tests fail.
+  - Failure analysis → auto-route to `develop` or `design` → re-test.
+
+The review score is the loss signal. It decreases (improves) over rounds — a literal training curve:
+
+```
+Rust SQL Engine Design: R1=52 → R2=68 → R3=73 (converged above threshold)
+```
+
+## Symbolic Constraints
+
+The "symbolic" half is what makes the system reliable:
+
+- **State machine**: Issue lifecycle with validated transitions. No skipping stages.
+- **Review scoring thresholds**: Deterministic pass/fail/conditional decisions from continuous scores.
+- **Independent test verification**: Engine runs `cargo test` / `go test` / `pytest` itself. If the exit code is non-zero, the agent's PASS is overridden to FAIL. This is the non-negotiable ground truth oracle.
+- **Budget limits**: Accumulated token cost checked after each agent call. Exceeding the limit halts the loop.
+- **Retry bounds**: Max review rounds and max test retries prevent infinite loops.
+
+These constraints cannot be circumvented by the neural component. They are the rules of the game.
+
+## Validated Results
+
+Built a SQL database engine (parser, query planner, executor, storage, B-tree indexes, MVCC transactions, error handling) from a requirements document:
+
+| Language | Design | Develop | Test | Code | Functional | Performance |
+|----------|--------|---------|------|------|-----------|-------------|
+| Go | 3 rounds | 3 rounds | 1 round | 17K lines | Passed | Passed |
+| Rust | 6 rounds | 4 rounds | 3 rounds | 10K lines | 37/37 | 7/7 (fixed via auto-route) |
+| Haskell | 9 rounds (blocked) | - | - | - | - | - |
+
+The Rust version demonstrates the full self-evolving loop: agent reported tests passing, but independent verification caught 2 failing performance benchmarks. The system automatically routed back to develop, the agent optimized the code, and all 44 tests passed on the next round.
+
+The Haskell version demonstrates graceful failure: the system identified (via reviewer feedback) that Haskell's STM/IO interaction model made the concurrent transaction design fundamentally problematic, and escalated to human rather than spinning endlessly.
 
 ## Installation
 
@@ -29,9 +84,11 @@ cd shadowcoder
 pip install -e ".[dev]"
 ```
 
+Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+
 ## Configuration
 
-Create `~/.shadowcoder/config.yaml`:
+`~/.shadowcoder/config.yaml`:
 
 ```yaml
 agents:
@@ -50,7 +107,7 @@ review_policy:
   pass_threshold: no_high_or_critical
   max_review_rounds: 3
   max_test_retries: 3
-  # max_budget_usd: 10.0  # optional spending limit
+  # max_budget_usd: 10.0
 
 build:
   test_command: "cargo test"  # or "go test ./..." or "pytest"
@@ -62,123 +119,79 @@ worktree:
   base_dir: .shadowcoder/worktrees
 ```
 
-Requires the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) to be installed and authenticated.
-
 ## Usage
 
-### Via script
-
 ```bash
-# Create an issue with requirements
-python scripts/run_real.py /path/to/your/repo create "Feature Name" --from requirements.md
+# Create issue with requirements
+python scripts/run_real.py /path/to/repo create "Feature" --from requirements.md
 
-# Run design (includes preflight check)
-python scripts/run_real.py /path/to/your/repo design 1
+# Run the loop
+python scripts/run_real.py /path/to/repo design 1
+python scripts/run_real.py /path/to/repo develop 1
+python scripts/run_real.py /path/to/repo test 1
 
-# Run development
-python scripts/run_real.py /path/to/your/repo develop 1
+# Human-in-the-loop controls
+python scripts/run_real.py /path/to/repo approve 1    # approve blocked issue
+python scripts/run_real.py /path/to/repo resume 1     # retry from blocked
+python scripts/run_real.py /path/to/repo cancel 1
+python scripts/run_real.py /path/to/repo cleanup 1    # remove worktree
 
-# Run tests (auto-routes to develop/design on failure)
-python scripts/run_real.py /path/to/your/repo test 1
-
-# Other commands
-python scripts/run_real.py /path/to/your/repo list
-python scripts/run_real.py /path/to/your/repo info 1
-python scripts/run_real.py /path/to/your/repo approve 1    # approve a BLOCKED issue
-python scripts/run_real.py /path/to/your/repo resume 1     # resume from BLOCKED
-python scripts/run_real.py /path/to/your/repo cancel 1
-python scripts/run_real.py /path/to/your/repo cleanup 1    # remove worktree
+# Query
+python scripts/run_real.py /path/to/repo list
+python scripts/run_real.py /path/to/repo info 1
 ```
 
-### Via TUI
+Or via TUI: `shadowcoder`
 
-```bash
-shadowcoder
-# Then type commands: create, design #1, develop #1, test #1, list, info #1, etc.
-```
+## Audit Trail
 
-## How It Works
-
-### Issue files
-
-Each issue is stored as markdown with YAML frontmatter in your repo:
+Every issue maintains a complete record:
 
 ```
-your-repo/.shadowcoder/issues/
-  0001.md          # current state (requirements, design, implementation summary, test results)
-  0001.log.md      # chronological timeline (every action timestamped)
-  0001.versions/   # archived outputs (design_r1.md, design_r2.md, develop_r1.md, ...)
+.shadowcoder/issues/
+  0001.md          # Current state (requirements, latest design, implementation, test results)
+  0001.log.md      # Chronological timeline — every action timestamped
+  0001.versions/   # Archived outputs — design_r1.md, design_r2.md, develop_r1.md, ...
 ```
 
-### Git worktrees
+The log is append-only. Design/code sections show the latest version; previous versions are in `.versions/`. Review history is in the log. Nothing is lost.
 
-Each issue gets its own git worktree and branch (`shadowcoder/issue-N`), isolating concurrent work. The worktree is created on first `design` and persists through `develop` and `test`. After the issue is done, use `cleanup` to remove it.
+## Agent Abstraction
 
-### Agent abstraction
-
-Agents implement four methods with structured return types:
+Agents implement five methods with structured return types:
 
 ```python
 class BaseAgent(ABC):
-    async def preflight(self, request) -> PreflightOutput: ...
-    async def design(self, request) -> DesignOutput: ...
-    async def develop(self, request) -> DevelopOutput: ...
-    async def review(self, request) -> ReviewOutput: ...
-    async def test(self, request) -> TestOutput: ...
+    async def preflight(self, request) -> PreflightOutput
+    async def design(self, request) -> DesignOutput
+    async def develop(self, request) -> DevelopOutput
+    async def review(self, request) -> ReviewOutput
+    async def test(self, request) -> TestOutput
 ```
 
-Each agent implementation handles its own output format constraints. For example, `ClaudeCodeAgent` calls the `claude` CLI and parses the response. Adding a new agent (Codex, LangChain, etc.) means implementing these five methods.
-
-### Review scoring
-
-Reviews return a score from 0 to 100:
-
-| Score | Decision |
-|-------|----------|
-| 90-100 | Pass |
-| 70-89 | Conditional pass (issues deferred to next stage) |
-| < 70 | Fail, retry |
-
-After `max_review_rounds` failures, the issue moves to BLOCKED and waits for human intervention (`approve` or `resume`).
-
-## Validated Results
-
-ShadowCoder has been end-to-end validated on a real task: building a SQL database engine (parser, query planner, executor, storage engine, B-tree indexes, MVCC transactions, error handling).
-
-| Language | Design rounds | Develop rounds | Code output | Functional tests | Performance tests |
-|----------|--------------|----------------|-------------|-----------------|------------------|
-| Go | 3 | 3 | 52 files, 17K lines | Passed | Passed |
-| Rust | 6 | 3 | 24 files, 10K lines | 23/23 passed | 5/7 passed |
-| Haskell | 9 (blocked) | not reached | - | - | - |
-
-## Development
-
-```bash
-# Run tests
-pytest tests/ -v
-
-# Current: 138 tests (unit + integration + e2e)
-```
+Each agent handles its own output format constraints internally. The Engine never parses raw LLM output — it only consumes typed fields. Adding a new agent (Codex, LangChain, local models) means implementing these five methods.
 
 ## Architecture
 
 ```
 src/shadowcoder/
-  cli/tui/app.py        # Textual TUI
   core/
-    bus.py               # Async message bus (commands/events)
-    engine.py            # Orchestrator (state machine, review loops, test routing)
-    config.py            # YAML config with typed accessors
-    issue_store.py       # Issue CRUD, sections, log, versions
-    models.py            # IssueStatus, TaskStatus, state transitions
-    task_manager.py      # Runtime task management
-    worktree.py          # Git worktree lifecycle (ensure/cleanup/exists)
+    engine.py          # The loop: state machine + review scoring + test verification
+    bus.py             # Async message bus
+    issue_store.py     # Issue files, logs, version archives
+    models.py          # States, transitions
+    config.py          # Typed config
+    task_manager.py    # Runtime tasks
+    worktree.py        # Git worktree lifecycle
   agents/
-    types.py             # Structured output types (DesignOutput, ReviewOutput, etc.)
-    base.py              # Abstract agent interface
-    claude_code.py       # Claude Code CLI implementation
-    registry.py          # Agent discovery and caching
+    types.py           # Structured output types
+    base.py            # Abstract interface + helpers
+    claude_code.py     # Claude Code CLI implementation
+    registry.py        # Agent discovery
+  cli/tui/app.py       # Textual TUI
 ```
+
+138 tests. 18 source files. ~1,700 lines of Python.
 
 ## License
 
