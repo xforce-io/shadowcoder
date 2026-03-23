@@ -28,11 +28,55 @@ class FeedbackItem:
     escalation_level: int      # 升级等级（1=正常, 2=更具体, 3=给代码示例, 4+=上报人类）
 ```
 
-Engine 在每轮 review 后做 diff：
-1. 新 review 的 comments 和现有 unresolved items 做匹配（按 category + 语义相似度）
-2. 匹配到的：`times_raised += 1`，不是新 item
-3. 没匹配到的：创建新 FeedbackItem
-4. 现有 item 在新 review 中不再出现：标记 `resolved = True`
+### Feedback 匹配机制：Reviewer 显式标注
+
+**不做算法匹配。** 让 reviewer 显式判断每个旧 item 是否已解决。
+
+Reviewer 的 prompt 中注入当前 unresolved items：
+
+```
+当前未解决的 feedback items:
+  #F1: deadlock detection — wait-for graph 环检测未实现
+  #F3: NULL handling — NOT IN with NULL 语义错误
+  #F4: index scan fallback — 非等值 join 无 fallback
+
+请在 review 中：
+1. 对每个未解决 item，判断是否已解决（列入 resolved_item_ids）
+2. 发现新问题则作为新 comment 提出
+```
+
+ReviewOutput 包含 `resolved_item_ids`（见下方第三层 ReviewOutput 定义）。
+
+Engine 的更新逻辑是纯 symbolic 的，零匹配算法：
+
+```python
+def update_feedback(self, feedback_state, review):
+    # 标记已解决
+    for item_id in review.resolved_item_ids:
+        feedback_state.resolve(item_id)
+
+    # 未解决的旧 item → times_raised += 1
+    for item in feedback_state.unresolved():
+        if item.id not in review.resolved_item_ids:
+            item.times_raised += 1
+            item.escalation_level = min(item.times_raised, 4)
+
+    # 新 comments → 创建新 FeedbackItem
+    for comment in review.comments:
+        feedback_state.add(FeedbackItem(
+            id=feedback_state.next_id(),
+            category=comment.severity.value,
+            description=comment.message,
+            round_introduced=current_round,
+            times_raised=1,
+            resolved=False,
+            escalation_level=1))
+```
+
+**为什么让 reviewer 做而不是自动匹配：**
+- Reviewer 在 review 过程中自然会判断"这个问题修了没"——我们只是让它结构化输出这个判断
+- 不需要语义相似度算法、嵌入向量、NLP pipeline
+- Reviewer 的判断比任何启发式匹配都准确（它理解代码语义）
 
 给 agent 的反馈格式：
 
@@ -89,8 +133,9 @@ class TestCase:
 @dataclass
 class ReviewOutput:
     score: int
-    comments: list[ReviewComment]
-    proposed_tests: list[TestCase]   # 新增：reviewer 提出的测试
+    comments: list[ReviewComment]     # 新发现的问题
+    resolved_item_ids: list[str]      # 哪些旧 feedback items 已解决
+    proposed_tests: list[TestCase]    # reviewer 提出的测试
     reviewer: str
     usage: AgentUsage | None = None
 ```
@@ -204,15 +249,15 @@ FeedbackItem 存在 issue 的 `.log.md` 和一个结构化文件中：
 
 | 文件 | 改动 |
 |------|------|
-| `agents/types.py` | 新增 `FeedbackItem`, `TestCase`; `ReviewOutput` 加 `proposed_tests` |
-| `core/engine.py` | feedback 跟踪、匹配、升级逻辑; acceptance 测试保护; 测试注入 |
+| `agents/types.py` | 新增 `FeedbackItem`, `TestCase`; `ReviewOutput` 加 `resolved_item_ids`, `proposed_tests` |
+| `core/engine.py` | feedback 跟踪（基于 reviewer 显式标注）、升级逻辑; acceptance 测试保护; 测试注入 |
 | `core/issue_store.py` | 新增 `.feedback.json` 读写 |
 | `agents/claude_code.py` | reviewer prompt 要求生成测试; 反馈格式化包含升级信息 |
 | `tests/` | 更新 |
 
 ## 不做的（YAGNI）
 
-- 不做语义相似度匹配来关联 feedback items——用 category + reviewer 判断足够
+- 不做任何匹配算法——reviewer 显式标注 resolved_item_ids，Engine 只做 symbolic 更新
 - 不做自动 pattern 提取——人类 review 后手动保存
 - 不做 acceptance 测试的自动清理——积累到 20 个测试不算多
 - 不改 pipeline 架构——在现有 Engine 方法上做，不搞 Verifier 抽象
