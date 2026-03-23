@@ -31,12 +31,39 @@ develop 产出代码
 ```
 
 Gate 是 Engine 自己跑的，不需要 agent 参与。纯 symbolic。
+判定依据是 test command 的 **exit code**（0=通过，非0=失败），不做输出内容解析。
+
+**Test command 来源**（优先级从高到低）：
+1. config 里配了 `build.test_command` → 用配置的
+2. 没配 → 自动检测项目类型：
+
+```python
+async def _detect_test_command(self, worktree_path: str) -> str:
+    p = Path(worktree_path)
+    if (p / "Cargo.toml").exists():  return "cargo test"
+    if (p / "go.mod").exists():      return "go test ./..."
+    if (p / "package.json").exists(): return "npm test"
+    if (p / "pyproject.toml").exists() or (p / "setup.py").exists():
+                                      return "python -m pytest"
+    if (p / "Makefile").exists():     return "make test"
+    raise RuntimeError(
+        f"Cannot detect test command for {worktree_path}. "
+        f"Set build.test_command in ~/.shadowcoder/config.yaml")
+```
+
+**检测不到 → 报错退出**，不跳过。没有 gate 的研发过程不可接受。
 
 ```python
 async def _gate_check(self, issue_id, worktree_path, proposed_tests):
     """Symbolic gate: build + test + acceptance check."""
-    # 1+2: run test command
-    passed, output = await self._verify_tests(worktree_path)
+    # 0: resolve test command
+    test_cmd = self.config.get_test_command()
+    if not test_cmd:
+        test_cmd = await self._detect_test_command(worktree_path)
+    # _detect_test_command raises if detection fails — gate aborts
+
+    # 1+2: run test command, check exit code
+    passed, output = await self._run_command(test_cmd, cwd=worktree_path)
     if not passed:
         return False, "build/tests failed", output
 
