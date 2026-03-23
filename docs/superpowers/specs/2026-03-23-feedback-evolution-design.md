@@ -120,22 +120,37 @@ def escalate_feedback(self, item: FeedbackItem) -> str:
 
 ### 第三层：Reviewer 生成对抗性测试
 
-ReviewOutput 扩展：
+#### 语言无关的测试规约
+
+Reviewer 不写测试代码，只描述"测什么"和"期望结果"。Developer 负责实现具体测试代码。
 
 ```python
 @dataclass
 class TestCase:
-    name: str                  # 测试名
-    description: str           # 测试什么
-    code: str                  # 测试代码（具体语言）
+    name: str                  # 测试名（如 "test_null_in_subquery"）
+    description: str           # 测试什么（如 "SELECT 2 IN (1, NULL) 应返回 UNKNOWN"）
+    expected_behavior: str     # 期望行为（如 "返回 UNKNOWN，不是 TRUE 或 FALSE"）
     category: str              # "acceptance" / "edge_case" / "regression"
+    # 没有 code 字段 —— 语言无关
+```
 
+职责分离：
+
+| 角色 | 做什么 | 语言相关？ |
+|------|--------|----------|
+| Reviewer | 提出测试：测什么、期望结果 | 否 |
+| Developer | 写测试代码、让它通过 | 是 |
+| Engine | 验证测试名出现在测试输出中且通过 | 否（只看 exit code + test name） |
+
+ReviewOutput 扩展：
+
+```python
 @dataclass
 class ReviewOutput:
     score: int
     comments: list[ReviewComment]     # 新发现的问题
     resolved_item_ids: list[str]      # 哪些旧 feedback items 已解决
-    proposed_tests: list[TestCase]    # reviewer 提出的测试
+    proposed_tests: list[TestCase]    # reviewer 提出的测试（语言无关规约）
     reviewer: str
     usage: AgentUsage | None = None
 ```
@@ -144,69 +159,51 @@ Reviewer 的 system prompt 扩展：
 
 ```
 In addition to reviewing, propose 1-3 test cases that would catch
-the issues you found. Format as executable test code.
-These tests will be added to the acceptance test suite and the
-developer MUST make them pass. They cannot be modified or deleted.
+the issues you found. Describe WHAT to test and EXPECTED BEHAVIOR,
+not the test code. The developer will implement the actual test.
+
+Format each test as:
+  name: a_descriptive_test_name
+  description: what this test verifies
+  expected_behavior: the correct result or behavior
+
+These tests will be added to the acceptance suite. The developer
+MUST implement and pass them. They cannot be removed.
 ```
 
-### 测试文件管理
+#### Developer 实现测试
 
-worktree 中的测试分两层：
+Developer agent 的 context 中包含 reviewer 提出的 test cases：
 
 ```
-project/tests/
-  acceptance/           # reviewer 提出，只增不删
-    round1_q01.rs
-    round2_null.rs      # R2 reviewer 提出的 NULL 测试
-    round3_deadlock.rs  # R3 reviewer 提出的死锁测试
-  unit/                 # developer 写的，可以改
-    parser_test.rs
-    storage_test.rs
+Acceptance tests to implement (from reviewer):
+  - test_null_in_subquery: SELECT 2 IN (1, NULL) 应返回 UNKNOWN
+  - test_deadlock_victim: 两个事务互锁时应选择代价最小的回滚
+
+You must write executable tests for each of these. Do not skip any.
 ```
 
-Engine 保护 acceptance 测试：
+#### Engine 验证
+
+Engine 在 develop 后检查 test output 中是否包含每个 proposed test 的 name：
 
 ```python
-async def _protect_acceptance_tests(self, worktree_path: str,
-                                     before_files: set[str]) -> bool:
-    """检查 acceptance 测试是否被 developer 篡改。"""
-    after_files = set(glob(f"{worktree_path}/tests/acceptance/*"))
-    deleted = before_files - after_files
-    if deleted:
-        self._log(issue.id, f"Developer 删除了 acceptance 测试: {deleted} → 拒绝")
-        return False
-    # 检查内容是否被修改（git diff）
-    for f in before_files:
-        # ... check if content changed
-    return True
+def _verify_acceptance_tests(self, test_output: str,
+                              proposed_tests: list[TestCase]) -> list[str]:
+    """返回未实现的测试名列表。"""
+    missing = []
+    for tc in proposed_tests:
+        if tc.name not in test_output:
+            missing.append(tc.name)
+    return missing
 ```
 
-### 跨 issue 知识沉淀
+缺失的测试 → 自动 reject（不进入 review，直接回到 develop）。
 
-Issue DONE 后，系统从 feedback history 提取可复用的 patterns：
+#### 测试只增不减
 
-```
-.shadowcoder/knowledge/
-  test_patterns.md      # 通用测试策略
-  review_patterns.md    # 常见 review 发现
-```
-
-格式：
-
-```markdown
-## NULL 语义 [来源: issue #1, #3]
-任何 SQL 项目，reviewer 应从第一轮起检查：
-- NULL = NULL → UNKNOWN
-- NOT IN with NULL → UNKNOWN
-- COUNT(*) vs COUNT(col) with NULLs
-
-## 并发事务 [来源: issue #1, #2]
-- 至少 2 对写写冲突测试
-- 死锁检测验证 victim 选择
-```
-
-**不自动积累**——issue DONE 时系统提议 patterns，人类 review 后决定保留哪些。
-新 issue 开始时，知识库内容注入 reviewer prompt。
+所有轮次 reviewer 提出的 TestCase 累积存储在 `0001.feedback.json` 中。
+每轮 develop 都必须通过全部历史 acceptance tests，不只是最新一轮的。
 
 ## 数据存储
 
@@ -258,6 +255,7 @@ FeedbackItem 存在 issue 的 `.log.md` 和一个结构化文件中：
 ## 不做的（YAGNI）
 
 - 不做任何匹配算法——reviewer 显式标注 resolved_item_ids，Engine 只做 symbolic 更新
-- 不做自动 pattern 提取——人类 review 后手动保存
+- 不做跨 issue 知识沉淀——后续单独设计
 - 不做 acceptance 测试的自动清理——积累到 20 个测试不算多
+- 不让 reviewer 写测试代码——只写语言无关的规约，developer 实现
 - 不改 pipeline 架构——在现有 Engine 方法上做，不搞 Verifier 抽象
