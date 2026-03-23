@@ -82,19 +82,80 @@ async def _gate_check(self, issue_id, worktree_path, proposed_tests):
 
 Reviewer 只做一件事：**评审设计和代码质量**。不再打分。
 
-输出简化：
+#### Review 基于 git diff
+
+Reviewer 看的是 **实际代码变更**，不是 agent 的文字摘要。
+Engine 在调 review 前获取 git diff，注入到 review context 中：
+
+```python
+async def _get_code_diff(self, worktree_path: str) -> str:
+    """Get git diff of all changes in the worktree."""
+    # staged + unstaged changes
+    proc = await asyncio.create_subprocess_exec(
+        "git", "diff", "HEAD",
+        cwd=worktree_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE)
+    stdout, _ = await proc.communicate()
+    diff = stdout.decode("utf-8", errors="replace")
+
+    # Also include untracked files content
+    proc2 = await asyncio.create_subprocess_exec(
+        "git", "ls-files", "--others", "--exclude-standard",
+        cwd=worktree_path,
+        stdout=asyncio.subprocess.PIPE)
+    stdout2, _ = await proc2.communicate()
+    untracked = stdout2.decode().strip().splitlines()
+
+    for fpath in untracked:
+        full = Path(worktree_path) / fpath
+        if full.exists() and full.stat().st_size < 50000:  # skip large files
+            diff += f"\n\n=== NEW FILE: {fpath} ===\n{full.read_text(errors='replace')}"
+
+    return diff
+```
+
+Review request 的 context：
+
+```python
+request = AgentRequest(action="review", issue=issue,
+    context={
+        "worktree_path": task.worktree_path,
+        "code_diff": await self._get_code_diff(task.worktree_path),
+        "latest_review": ...,
+        "unresolved_feedback": ...,
+    })
+```
+
+Reviewer prompt 中明确说明看 diff：
+
+```
+You are reviewing a code change (git diff provided below).
+The code has already passed build and all tests.
+Focus on: logic correctness, design quality, potential issues that tests don't catch.
+
+Review the DIFF, not the full codebase. Flag issues specific to this change.
+```
+
+好处：
+- Reviewer 看到真实代码变更，不依赖 agent 自我描述
+- 第二轮只看增量 diff，不重复审全量
+- 和人类 code review 习惯一致（看 PR diff）
+- diff 比全量代码小得多，节省 context window
+
+#### Review 输出
 
 ```json
 {
   "comments": [
-    {"severity": "high", "message": "...", "location": "..."}
+    {"severity": "high", "message": "...", "location": "file.py:42"}
   ],
   "resolved_item_ids": ["F1", "F3"],
   "proposed_tests": [{"name": "...", "description": "...", "expected_behavior": "..."}]
 }
 ```
 
-没有 `passed`，没有 `score`。
+没有 `passed`，没有 `score`。location 引用 diff 中的具体文件和行号。
 
 ### 决策逻辑（Engine，symbolic）
 
