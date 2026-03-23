@@ -1,6 +1,6 @@
 import pytest
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput
+from shadowcoder.agents.types import DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.config import Config
 
@@ -16,10 +16,7 @@ class FakeAgent(BaseAgent):
         return DevelopOutput(summary="ok")
 
     async def review(self, request):
-        return ReviewOutput(passed=True, score=95, reviewer="fake")
-
-    async def test(self, request):
-        return TestOutput(report="ok", success=True)
+        return ReviewOutput(comments=[], reviewer="fake")
 
 
 def test_register_and_get(tmp_config):

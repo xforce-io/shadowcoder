@@ -18,7 +18,7 @@ class ShadowCoderApp(App):
         yield Header(show_clock=True)
         yield RichLog(id="output", wrap=True, highlight=True)
         yield Input(
-            placeholder="命令: create <title> | list | info #id | design #id | develop #id | test #id | resume #id | approve #id | cancel #id"
+            placeholder="命令: create <title> | list | info #id | design #id | develop #id | run #id | run <title> | resume #id | approve #id | cancel #id"
         )
         yield Footer()
 
@@ -70,8 +70,23 @@ class ShadowCoderApp(App):
                 return Message(MessageType.CMD_DESIGN, {"issue_id": int(ref.lstrip("#"))})
             case ["develop", ref]:
                 return Message(MessageType.CMD_DEVELOP, {"issue_id": int(ref.lstrip("#"))})
-            case ["test", ref]:
-                return Message(MessageType.CMD_TEST, {"issue_id": int(ref.lstrip("#"))})
+            case ["run", ref] if ref.lstrip("#").isdigit():
+                return Message(MessageType.CMD_RUN, {"issue_id": int(ref.lstrip("#"))})
+            case ["run", *title_parts] if title_parts:
+                title_words = []
+                description = None
+                i = 0
+                while i < len(title_parts):
+                    if title_parts[i] == "--from" and i + 1 < len(title_parts):
+                        description = title_parts[i + 1]
+                        i += 2
+                    else:
+                        title_words.append(title_parts[i])
+                        i += 1
+                payload = {"title": " ".join(title_words)}
+                if description:
+                    payload["description"] = description
+                return Message(MessageType.CMD_RUN, payload)
             case ["resume", ref]:
                 return Message(MessageType.CMD_RESUME, {"issue_id": int(ref.lstrip("#"))})
             case ["approve", ref]:

@@ -1,6 +1,6 @@
 from shadowcoder.agents.types import (
     Severity, ReviewComment, AgentUsage,
-    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
+    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput,
     AgentRequest, AgentActionFailed,
 )
 from shadowcoder.core.models import Issue, IssueStatus
@@ -41,40 +41,26 @@ def test_develop_output_with_files():
 
 
 def test_review_output():
-    o = ReviewOutput(passed=False, score=40, comments=[
+    o = ReviewOutput(comments=[
         ReviewComment(severity=Severity.HIGH, message="fix this")
     ], reviewer="claude")
-    assert not o.passed
-    assert o.score == 40
     assert len(o.comments) == 1
+    assert o.reviewer == "claude"
 
 
 def test_review_output_defaults():
-    o = ReviewOutput(passed=True)
+    o = ReviewOutput()
     assert o.comments == []
     assert o.reviewer == ""
-    assert o.score == 50  # default score
+    assert o.resolved_item_ids == []
+    assert o.proposed_tests == []
 
 
-def test_review_output_score_explicit():
-    o = ReviewOutput(passed=True, score=95)
-    assert o.score == 95
-
-    o2 = ReviewOutput(passed=False, score=40)
-    assert o2.score == 40
-
-
-def test_test_output():
-    o = TestOutput(report="all pass", success=True, passed_count=10, total_count=10)
-    assert o.success
-    assert o.recommendation is None
-
-
-def test_test_output_with_recommendation():
-    o = TestOutput(report="fail", success=False, recommendation="develop",
-                   passed_count=5, total_count=10)
-    assert not o.success
-    assert o.recommendation == "develop"
+def test_review_output_no_score():
+    """ReviewOutput should NOT have score or passed fields."""
+    o = ReviewOutput(comments=[], reviewer="test")
+    assert not hasattr(o, "score")
+    assert not hasattr(o, "passed")
 
 
 def test_agent_request():

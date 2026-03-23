@@ -6,6 +6,7 @@ from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
     FeedbackItem, TestCase, ReviewOutput, ReviewComment, Severity,
 )
+# ReviewComment and Severity imported for potential future use
 
 
 @pytest.fixture
@@ -29,14 +30,14 @@ def test_test_case_dataclass():
 
 
 def test_review_output_new_fields_defaults():
-    r = ReviewOutput(passed=True, score=90, reviewer="test")
+    r = ReviewOutput(reviewer="test")
     assert r.resolved_item_ids == []
     assert r.proposed_tests == []
 
 
 def test_review_output_with_new_fields():
     r = ReviewOutput(
-        passed=False, score=60, reviewer="test",
+        reviewer="test",
         resolved_item_ids=["F1", "F2"],
         proposed_tests=[TestCase(name="test_x", description="d", expected_behavior="e")])
     assert len(r.resolved_item_ids) == 2

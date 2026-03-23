@@ -45,6 +45,20 @@ def test_valid_transitions_blocked():
     assert IssueStatus.DEVELOPING in blocked
     assert IssueStatus.APPROVED in blocked
     assert IssueStatus.CANCELLED in blocked
+    assert IssueStatus.DONE in blocked
+
+
+def test_no_testing_status():
+    """TESTING status should not exist."""
+    values = [s.value for s in IssueStatus]
+    assert "testing" not in values
+
+
+def test_dev_review_goes_to_done():
+    """DEV_REVIEW should transition to DONE (not TESTING)."""
+    dev_review_transitions = VALID_TRANSITIONS[IssueStatus.DEV_REVIEW]
+    assert IssueStatus.DONE in dev_review_transitions
+    assert IssueStatus.DEVELOPING in dev_review_transitions
 
 
 def test_invalid_transition_error():

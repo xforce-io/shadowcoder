@@ -8,7 +8,7 @@ from shadowcoder.core.models import IssueStatus, TaskStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
     AgentRequest, AgentActionFailed, AgentUsage,
-    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
+    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput,
     ReviewComment, Severity,
 )
 from shadowcoder.agents.registry import AgentRegistry
@@ -49,8 +49,7 @@ def passing_agent():
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="develop output"))
-    agent.review = AsyncMock(return_value=ReviewOutput(passed=True, score=95, comments=[], reviewer="mock"))
-    agent.test = AsyncMock(return_value=TestOutput(report="all pass", success=True))
+    agent.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))
     return agent
 
 
@@ -60,12 +59,9 @@ def failing_review_agent():
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=False,
-        score=40,
-        comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
+        comments=[ReviewComment(severity=Severity.CRITICAL, message="bad")],
         reviewer="mock",
     ))
-    agent.test = AsyncMock(return_value=TestOutput(report="fail", success=False))
     return agent
 
 
@@ -99,9 +95,7 @@ async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=False,
-        score=40,
-        comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
+        comments=[ReviewComment(severity=Severity.CRITICAL, message="bad")],
         reviewer="mock",
     ))
     reg = MagicMock()
@@ -150,41 +144,18 @@ async def test_design_agent_exception(bus, store, task_mgr, config):
 
 
 async def test_develop_happy_path(bus, store, task_mgr, registry_with, config):
+    # Gate check: _gate_check will call _detect_test_command which may fail if no
+    # project files are found. Mock _gate_check to always pass.
     engine = make_engine(bus, store, task_mgr, registry_with, config)
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
+
     issue = store.create("Test issue")
     store.transition_status(issue.id, IssueStatus.DESIGNING)
     store.transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
     store.transition_status(issue.id, IssueStatus.APPROVED)
 
     await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.TESTING
-
-
-async def test_test_happy_path(bus, store, task_mgr, registry_with, config):
-    engine = make_engine(bus, store, task_mgr, registry_with, config)
-    issue = store.create("Test issue")
-    store.transition_status(issue.id, IssueStatus.DESIGNING)
-    store.transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
-    store.transition_status(issue.id, IssueStatus.APPROVED)
-    store.transition_status(issue.id, IssueStatus.DEVELOPING)
-    store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
-    store.transition_status(issue.id, IssueStatus.TESTING)
-
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.DONE
-
-
-async def test_test_from_failed(bus, store, task_mgr, registry_with, config):
-    engine = make_engine(bus, store, task_mgr, registry_with, config)
-    issue = store.create("Test issue")
-    store.transition_status(issue.id, IssueStatus.DESIGNING)
-    store.transition_status(issue.id, IssueStatus.FAILED)
-
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
 
     issue = store.get(1)
     assert issue.status == IssueStatus.DONE
@@ -205,9 +176,7 @@ async def test_approve_blocked(bus, store, task_mgr, config):
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=False,
-        score=40,
-        comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
+        comments=[ReviewComment(severity=Severity.CRITICAL, message="bad")],
         reviewer="mock",
     ))
     reg = MagicMock()
@@ -247,10 +216,10 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
         nonlocal call_count
         call_count += 1
         if call_count <= config.get_max_review_rounds():
-            return ReviewOutput(passed=False, score=40,
-                comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
+            return ReviewOutput(
+                comments=[ReviewComment(severity=Severity.CRITICAL, message="bad")],
                 reviewer="mock")
-        return ReviewOutput(passed=True, score=95, comments=[], reviewer="mock")
+        return ReviewOutput(comments=[], reviewer="mock")
 
     agent.design = AsyncMock(side_effect=design_side_effect)
     agent.review = AsyncMock(side_effect=review_side_effect)
@@ -315,13 +284,12 @@ async def test_cleanup_done_issue(bus, store, task_mgr, mock_worktree, registry_
     bus.subscribe(MessageType.EVT_STATUS_CHANGED, lambda m: status_events.append(m))
 
     issue = store.create("Test")
-    # Transition to DONE
+    # Transition to DONE (new path without TESTING)
     store.transition_status(issue.id, IssueStatus.DESIGNING)
     store.transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
     store.transition_status(issue.id, IssueStatus.APPROVED)
     store.transition_status(issue.id, IssueStatus.DEVELOPING)
     store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
-    store.transition_status(issue.id, IssueStatus.TESTING)
     store.transition_status(issue.id, IssueStatus.DONE)
 
     await bus.publish(Message(MessageType.CMD_CLEANUP, {"issue_id": 1}))
@@ -348,7 +316,6 @@ async def test_cleanup_non_done_issue(bus, store, task_mgr, mock_worktree, regis
 
 async def test_budget_exceeded(bus, store, task_mgr, config, tmp_path):
     """Agent returns usage that exceeds the budget; issue should become BLOCKED."""
-    # Create a config with a very low max_budget_usd
     config_path = tmp_path / "config_budget.yaml"
     config_path.write_text("""\
 agents:
@@ -396,14 +363,12 @@ worktree:
 
 
 async def test_conditional_pass(bus, store, task_mgr, config):
-    """Review returns score=75 (conditional pass) — issue should still proceed to next status."""
+    """Review returns HIGH=1 (conditional pass) — issue should still proceed to APPROVED."""
     agent = AsyncMock()
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True,
-        score=75,
-        comments=[ReviewComment(severity=Severity.MEDIUM, message="minor issue")],
+        comments=[ReviewComment(severity=Severity.HIGH, message="minor high issue")],
         reviewer="mock",
     ))
     reg = MagicMock()
@@ -418,7 +383,7 @@ async def test_conditional_pass(bus, store, task_mgr, config):
     await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
 
     issue = store.get(1)
-    # score=75 >= 70, so should conditionally pass and proceed to APPROVED
+    # HIGH=1 (<=2), no CRITICAL → conditional_pass → APPROVED
     assert issue.status == IssueStatus.APPROVED
     assert len(completed_events) == 1
 
@@ -452,3 +417,39 @@ async def test_design_low_feasibility_blocks(bus, store, task_mgr, config):
     issue = store.get(1)
     assert issue.status == IssueStatus.BLOCKED
     agent.design.assert_not_called()
+
+
+async def test_run_full_lifecycle(bus, store, task_mgr, registry_with, config):
+    """CMD_RUN: create → design → develop → done in one command."""
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
+
+    completed_events = []
+    bus.subscribe(MessageType.EVT_TASK_COMPLETED, lambda m: completed_events.append(m))
+
+    await bus.publish(Message(MessageType.CMD_RUN, {
+        "title": "Run test issue",
+    }))
+
+    issues = store.list_all()
+    assert len(issues) == 1
+    assert issues[0].status == IssueStatus.DONE
+    # design + develop completed
+    assert len(completed_events) >= 2
+
+
+async def test_run_existing_issue(bus, store, task_mgr, registry_with, config):
+    """CMD_RUN on existing APPROVED issue: only develop runs."""
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
+
+    issue = store.create("Run existing")
+    store.transition_status(issue.id, IssueStatus.DESIGNING)
+    store.transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(issue.id, IssueStatus.APPROVED)
+
+    await bus.publish(Message(MessageType.CMD_RUN, {"issue_id": 1}))
+
+    assert store.get(1).status == IssueStatus.DONE

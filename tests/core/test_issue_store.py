@@ -101,10 +101,8 @@ def test_update_section_overwrites(store):
 def test_append_review(store):
     store.create("Test")
     review = ReviewOutput(
-        passed=False,
-        score=40,
         comments=[
-            ReviewComment(severity=Severity.HIGH, message="Fix this"),
+            ReviewComment(severity=Severity.CRITICAL, message="Fix this"),
             ReviewComment(severity=Severity.LOW, message="Nit"),
         ],
         reviewer="claude-code",
@@ -115,7 +113,6 @@ def test_append_review(store):
     # After the split: .md only has summary, not full review details
     assert "NOT PASSED" in content
     assert "2 comments" in content
-    assert "score=40" in content
 
 
 def test_append_log_creates_file(store):
@@ -146,10 +143,8 @@ def test_append_review_splits(store):
     from shadowcoder.agents.types import ReviewOutput, ReviewComment, Severity
     store.create("Test")
     review = ReviewOutput(
-        passed=False,
-        score=40,
         comments=[
-            ReviewComment(severity=Severity.HIGH, message="Fix this"),
+            ReviewComment(severity=Severity.CRITICAL, message="Fix this"),
             ReviewComment(severity=Severity.LOW, message="Nit"),
         ],
         reviewer="claude-code",

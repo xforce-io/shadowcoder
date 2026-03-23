@@ -16,7 +16,7 @@ import frontmatter as fm
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -718,11 +718,6 @@ class StateDrivenAgent(BaseAgent):
         requirements = issue.sections.get("需求", "")
         return self._do_develop(issue, requirements)
 
-    async def test(self, request: AgentRequest) -> TestOutput:
-        self.execute_log.append(request.action)
-        issue = request.issue
-        return self._do_test(issue)
-
     def _do_design(self, issue, requirements) -> DesignOutput:
         """Produce design based on current state.
         Can only add limited new features per round."""
@@ -767,17 +762,13 @@ class StateDrivenAgent(BaseAgent):
         design = issue.sections.get("设计", "")
         existing_impl = issue.sections.get("开发步骤", "")
         review_comments = issue.sections.get("Dev Review", "")
-        test_results = issue.sections.get("测试", "")
 
         designed = self._included_features(design)
         already_impl = self._included_features(existing_impl)
         reviewer_wants = self._mentioned_in_review(review_comments)
 
-        # Also check test failure analysis for mentioned features
-        test_wants = self._mentioned_in_review(test_results)
-
         # Can only implement what's designed
-        candidates = (designed | reviewer_wants | test_wants) - already_impl
+        candidates = (designed | reviewer_wants) - already_impl
         candidates = candidates & designed  # can't implement what's not designed
         candidates = self._resolve_deps(candidates) - already_impl
         candidates = candidates & designed  # re-filter after deps
@@ -801,67 +792,6 @@ class StateDrivenAgent(BaseAgent):
 
         content = "\n\n".join(sections)
         return DevelopOutput(summary=content)
-
-    def _do_test(self, issue) -> TestOutput:
-        """Run benchmarks against implementation. Check which pass."""
-        impl = issue.sections.get("开发步骤", "")
-        implemented = self._included_features(impl)
-
-        passed = []
-        failed = []
-        for bname, bdata in BENCHMARK_ITEMS.items():
-            required = bdata["requires"]
-            if required <= implemented:
-                passed.append(bname)
-            else:
-                missing = required - implemented
-                failed.append((bname, missing))
-
-        total = len(BENCHMARK_ITEMS)
-        pass_count = len(passed)
-
-        lines = [f"## Benchmark Results: {pass_count}/{total}\n"]
-        for bname in passed:
-            lines.append(f"  ✓ {bname}: {BENCHMARK_ITEMS[bname]['query'][:60]}...")
-        for bname, missing in failed:
-            lines.append(f"  ✗ {bname}: FAILED — missing features: {', '.join(sorted(missing))}")
-
-        if failed:
-            # Analyze: are failures due to missing design or missing implementation?
-            impl_sections = self._included_features(impl)
-            design = issue.sections.get("设计", "")
-            designed = self._included_features(design)
-
-            all_missing = set()
-            for _, missing in failed:
-                all_missing |= missing
-
-            not_designed = all_missing - designed
-            designed_not_impl = all_missing & designed - impl_sections
-
-            lines.append("\n## Failure Analysis")
-            if not_designed:
-                lines.append(f"Features not in design: {', '.join(sorted(not_designed))}")
-                lines.append("Recommendation: DESIGN")
-                recommendation = "design"
-            elif designed_not_impl:
-                lines.append(f"Features designed but not implemented: {', '.join(sorted(designed_not_impl))}")
-                lines.append("Recommendation: DEVELOP")
-                recommendation = "develop"
-            else:
-                lines.append("Recommendation: DEVELOP (implementation may have bugs)")
-                recommendation = "develop"
-
-            content = "\n".join(lines)
-            return TestOutput(report=content, success=False,
-                              recommendation=recommendation,
-                              passed_count=pass_count, total_count=total)
-
-        # All passed
-        lines.append("\n## All benchmarks passed!")
-        content = "\n".join(lines)
-        return TestOutput(report=content, success=True,
-                          passed_count=total, total_count=total)
 
     async def review(self, request: AgentRequest) -> ReviewOutput:
         """Review: check content against requirements."""
@@ -892,12 +822,9 @@ class StateDrivenAgent(BaseAgent):
                             f"Requirements mention keywords: "
                             f"{DESIGN_FEATURES.get(feat, {}).get('required_keywords', [feat])}",
                 ))
-            return ReviewOutput(passed=False, score=40, comments=comments,
-                                reviewer=f"{phase}-reviewer")
+            return ReviewOutput(comments=comments, reviewer=f"{phase}-reviewer")
 
         return ReviewOutput(
-            passed=True,
-            score=95,
             comments=[ReviewComment(
                 severity=Severity.LOW,
                 message=f"All required features covered in {phase}.",
@@ -946,7 +873,6 @@ reviewers:
 review_policy:
   pass_threshold: no_high_or_critical
   max_review_rounds: 5
-  max_test_retries: 5
 
 issue_store:
   dir: .shadowcoder/issues
@@ -966,6 +892,10 @@ worktree:
     registry._instances["claude-code"] = agent
 
     engine = Engine(bus, issue_store, task_manager, registry, config, str(playground))
+    # Mock gate and diff (no real test suite in this e2e test)
+    from unittest.mock import AsyncMock
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
 
     events = {mt: [] for mt in MessageType}
     for mt in MessageType:
@@ -1051,43 +981,20 @@ async def test_sql_engine_goal_driven(system):
         await bus.publish(Message(MessageType.CMD_APPROVE, {"issue_id": 1}))
         issue = store.get(1)
 
-    assert issue.status == IssueStatus.TESTING, \
-        f"Expected TESTING, got {issue.status.value}"
+    # After develop, issue should be DONE (no separate test stage)
+    assert issue.status == IssueStatus.DONE, \
+        f"Expected DONE, got {issue.status.value}"
 
     impl = issue.sections.get("开发步骤", "")
     assert len(impl) > 500, "Implementation should be substantial"
 
-    # === TEST (system auto-retries with recommendation routing) ===
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-
-    # If test exhausted retries, approve from blocked
-    if issue.status == IssueStatus.BLOCKED:
-        # Check how far we got
-        test_content = issue.sections.get("测试", "")
-        print(f"Test ended in BLOCKED. Last test output:\n{test_content[:500]}")
-        # This is acceptable — means the system correctly identified
-        # it couldn't reach the goal within retry limits
-        return
-
-    assert issue.status == IssueStatus.DONE, \
-        f"Expected DONE, got {issue.status.value}"
-
     # === VERIFY FINAL STATE ===
-    test_content = issue.sections.get("测试", "")
-    total = len(BENCHMARK_ITEMS)
-    assert f"{total}/{total}" in test_content, \
-        f"Expected all {total} benchmarks to pass"
-    assert "All benchmarks passed" in test_content
-
-    # Verify all sections present (航海日志 is now in .log.md, not .md)
+    # Verify core sections present
     assert "需求" in issue.sections
     assert "设计" in issue.sections
     assert "Design Review" in issue.sections
     assert "开发步骤" in issue.sections
     assert "Dev Review" in issue.sections
-    assert "测试" in issue.sections
 
     # Print the full voyage log from .log.md
     voyage_log = store.get_log(1)
@@ -1102,20 +1009,16 @@ async def test_sql_engine_goal_driven(system):
     # === VERIFY GOAL WAS REACHED ===
     design_calls = agent.execute_log.count("design")
     develop_calls = agent.execute_log.count("develop")
-    test_calls = agent.execute_log.count("test")
     review_calls = len(agent.review_log)
 
     print(f"\n=== Execution Summary ===")
     print(f"Design rounds: {design_calls}")
     print(f"Develop rounds: {develop_calls}")
-    print(f"Test rounds: {test_calls}")
     print(f"Review calls: {review_calls}")
 
-    # Goal-oriented assertions: the system reached the goal,
-    # and it went through review (not just one-shot without feedback)
+    # Goal-oriented assertions
     assert design_calls >= 1
     assert develop_calls >= 1
-    assert test_calls >= 1
     assert review_calls >= 2, "Should have gone through review process"
 
     # Design required multiple rounds (base features don't cover all requirements)

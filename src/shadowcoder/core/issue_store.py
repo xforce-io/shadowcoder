@@ -119,14 +119,25 @@ class IssueStore:
 
     def append_review(self, issue_id: int, section: str, review: ReviewOutput) -> None:
         # .md: only latest review summary (overwrite)
-        summary = f"{'PASSED' if review.score >= 70 else 'NOT PASSED'} (score={review.score}, {len(review.comments)} comments)"
+        from shadowcoder.core.models import IssueStatus  # avoid circular at module level
+        critical = sum(1 for c in review.comments if c.severity.value == "critical")
+        high = sum(1 for c in review.comments if c.severity.value == "high")
+        if critical > 0:
+            verdict = "NOT PASSED"
+        elif high == 0:
+            verdict = "PASSED"
+        elif high <= 2:
+            verdict = "PASSED (conditional)"
+        else:
+            verdict = "NOT PASSED"
+        summary = f"{verdict} (CRITICAL={critical}, HIGH={high}, {len(review.comments)} comments total)"
         issue = self.get(issue_id)
         issue.sections[section] = summary
         self._save(issue)
 
-        # .log.md: full review content (append)
+        # .log.md: full review content (append) — include verdict for traceability
         formatted = self._format_review(review)
-        self.append_log(issue_id, f"{section}\n{formatted}")
+        self.append_log(issue_id, f"{section}\n{summary}\n{formatted}")
 
     def append_log(self, issue_id: int, entry: str) -> None:
         path = self._log_path(issue_id)
@@ -165,7 +176,9 @@ class IssueStore:
 
     @staticmethod
     def _format_review(review: ReviewOutput) -> str:
-        lines = [f"**Reviewer: {review.reviewer}** — score: {review.score}/100 — {'PASSED' if review.score >= 70 else 'NOT PASSED'}"]
+        critical = sum(1 for c in review.comments if c.severity.value == "critical")
+        high = sum(1 for c in review.comments if c.severity.value == "high")
+        lines = [f"**Reviewer: {review.reviewer}** — CRITICAL={critical}, HIGH={high}"]
         for c in review.comments:
             loc = f" ({c.location})" if c.location else ""
             lines.append(f"- [{c.severity.value.upper()}]{loc} {c.message}")

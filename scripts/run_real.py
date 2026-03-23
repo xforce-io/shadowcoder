@@ -6,7 +6,8 @@ Examples:
   python scripts/run_real.py ~/lab/coder-playground create "SQL Database Engine" --from requirements.md
   python scripts/run_real.py ~/lab/coder-playground design 1
   python scripts/run_real.py ~/lab/coder-playground develop 1
-  python scripts/run_real.py ~/lab/coder-playground test 1
+  python scripts/run_real.py ~/lab/coder-playground run "SQL Database Engine" --from requirements.md
+  python scripts/run_real.py ~/lab/coder-playground run 1
   python scripts/run_real.py ~/lab/coder-playground info 1
   python scripts/run_real.py ~/lab/coder-playground list
   python scripts/run_real.py ~/lab/coder-playground cleanup 1
@@ -78,8 +79,27 @@ async def main():
     elif command == "develop":
         await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": int(args[0])}))
 
-    elif command == "test":
-        await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": int(args[0])}))
+    elif command == "run":
+        if args and args[0].isdigit():
+            payload = {"issue_id": int(args[0])}
+        else:
+            title_parts = []
+            description = None
+            i = 0
+            while i < len(args):
+                if args[i] == "--from" and i + 1 < len(args):
+                    desc_path = Path(repo_path) / args[i + 1]
+                    if not desc_path.exists():
+                        desc_path = Path(args[i + 1])
+                    description = str(desc_path)
+                    i += 2
+                else:
+                    title_parts.append(args[i])
+                    i += 1
+            payload = {"title": " ".join(title_parts)}
+            if description:
+                payload["description"] = description
+        await bus.publish(Message(MessageType.CMD_RUN, payload))
 
     elif command == "info":
         await bus.publish(Message(MessageType.CMD_INFO, {"issue_id": int(args[0])}))
@@ -108,7 +128,7 @@ async def main():
         sys.exit(1)
 
     # Print final issue state
-    if command in ("create", "design", "develop", "test", "approve", "resume"):
+    if command in ("create", "design", "develop", "run", "approve", "resume"):
         try:
             issues = issue_store.list_all()
             if issues:

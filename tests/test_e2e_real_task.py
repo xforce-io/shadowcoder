@@ -18,7 +18,7 @@ import frontmatter as fm
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -349,11 +349,9 @@ tests/test_cli.py::test_cli_exit_code_1 ................... PASSED
 
 
 REVIEW_DESIGN_REJECT = ReviewOutput(
-    passed=False,
-    score=40,
     comments=[
         ReviewComment(
-            severity=Severity.HIGH,
+            severity=Severity.CRITICAL,
             message="Missing error handling design. The checker has no timeout, "
                     "retry, or rate limiting strategy. What happens when a server "
                     "is slow or returns 429? This needs to be addressed before "
@@ -382,8 +380,6 @@ REVIEW_DESIGN_REJECT = ReviewOutput(
 )
 
 REVIEW_DESIGN_APPROVE = ReviewOutput(
-    passed=True,
-    score=95,
     comments=[
         ReviewComment(
             severity=Severity.LOW,
@@ -399,8 +395,6 @@ REVIEW_DESIGN_APPROVE = ReviewOutput(
 )
 
 REVIEW_DEVELOP_REJECT = ReviewOutput(
-    passed=False,
-    score=40,
     comments=[
         ReviewComment(
             severity=Severity.HIGH,
@@ -416,7 +410,7 @@ REVIEW_DEVELOP_REJECT = ReviewOutput(
             location="checker.py",
         ),
         ReviewComment(
-            severity=Severity.MEDIUM,
+            severity=Severity.HIGH,
             message="scanner.py doesn't handle encoding errors as specified in design. "
                     "Missing UTF-8 → Latin-1 fallback.",
             location="scanner.py:scan_file",
@@ -426,8 +420,6 @@ REVIEW_DEVELOP_REJECT = ReviewOutput(
 )
 
 REVIEW_DEVELOP_APPROVE = ReviewOutput(
-    passed=True,
-    score=95,
     comments=[
         ReviewComment(
             severity=Severity.LOW,
@@ -466,9 +458,6 @@ class RealisticAgent(BaseAgent):
         self._develop_round += 1
         summary = DEVELOP_V1 if self._develop_round == 1 else DEVELOP_V2
         return DevelopOutput(summary=summary)
-
-    async def test(self, request: AgentRequest) -> TestOutput:
-        return TestOutput(report=TEST_RESULTS, success=True, passed_count=18, total_count=18)
 
     async def review(self, request: AgentRequest) -> ReviewOutput:
         # Infer which stage we're reviewing from issue sections
@@ -548,6 +537,10 @@ worktree:
     registry._instances["code-reviewer"] = agent
 
     engine = Engine(bus, issue_store, task_manager, registry, config, str(playground))
+    # Mock gate and diff (no real test suite in this repo)
+    from unittest.mock import AsyncMock
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
 
     # Collect all events for verification
     collected = {mt: [] for mt in MessageType}
@@ -659,8 +652,8 @@ async def test_real_task_full_lifecycle(system):
     await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
 
     issue = store.get(1)
-    assert issue.status == IssueStatus.TESTING, \
-        f"Expected TESTING, got {issue.status.value}"
+    assert issue.status == IssueStatus.DONE, \
+        f"Expected DONE, got {issue.status.value}"
 
     # -- Verify agent was called twice for develop --
     assert agent._develop_round == 2, \
@@ -690,24 +683,11 @@ async def test_real_task_full_lifecycle(system):
         "Log should contain specific v1 feedback"
     assert "code-reviewer" in log
 
-    # ===== TEST =====
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.DONE, \
-        f"Expected DONE, got {issue.status.value}"
-
-    # -- Verify test content --
-    test_content = issue.sections["测试"]
-    assert "18 passed" in test_content
-    assert "92%" in test_content
-    assert "scanner.py" in test_content
-
     # ===== FINAL VERIFICATION =====
 
-    # -- All sections present (航海日志 is now in .log.md, not .md) --
-    expected_sections = {"设计", "Design Review", "开发步骤", "Dev Review", "测试"}
-    assert expected_sections == set(issue.sections.keys()), \
+    # -- All sections present (no test section anymore) --
+    expected_sections = {"设计", "Design Review", "开发步骤", "Dev Review"}
+    assert expected_sections.issubset(set(issue.sections.keys())), \
         f"Missing sections: {expected_sections - set(issue.sections.keys())}"
 
     # -- Log file has content --
@@ -719,9 +699,9 @@ async def test_real_task_full_lifecycle(system):
     assert post["status"] == "done"
     assert post["id"] == 1
 
-    # -- Event counts --
+    # -- Event counts: design + develop completed --
     assert len(events[MessageType.EVT_ISSUE_CREATED]) == 1
-    assert len(events[MessageType.EVT_TASK_COMPLETED]) == 3  # design, develop, test
+    assert len(events[MessageType.EVT_TASK_COMPLETED]) == 2  # design, develop
 
     # -- Review events: 2 design + 2 develop = 4 --
     review_evts = events[MessageType.EVT_REVIEW_RESULT]
@@ -733,9 +713,6 @@ async def test_real_task_full_lifecycle(system):
     assert review_evts[3].payload["passed"]        # develop round 2 approve
 
     # -- Status change events --
-    # Engine publishes EVT_STATUS_CHANGED for executing phases only
-    # (DESIGNING round 1, DESIGNING round 2, DEVELOPING round 1, DEVELOPING round 2)
-    # Review/success/done transitions happen via IssueStore but don't emit events
     status_evts = events[MessageType.EVT_STATUS_CHANGED]
     statuses = [e.payload["status"] for e in status_evts]
     assert statuses.count("designing") == 2, "Should have 2 design rounds"

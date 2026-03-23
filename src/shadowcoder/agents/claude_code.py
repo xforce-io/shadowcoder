@@ -9,7 +9,7 @@ from textwrap import dedent
 from shadowcoder.agents.base import BaseAgent
 from shadowcoder.agents.types import (
     AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput,
-    ReviewOutput, TestCase, TestOutput, ReviewComment, Severity,
+    ReviewOutput, TestCase, ReviewComment, Severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -205,35 +205,58 @@ class ClaudeCodeAgent(BaseAgent):
         files_changed = await self._get_files_changed(cwd or "")
         return DevelopOutput(summary=result, files_changed=files_changed, usage=usage)
 
+    def _build_review_context(self, request: AgentRequest) -> str:
+        """Build context for code review, including git diff."""
+        issue = request.issue
+        parts = [f"Issue: {issue.title} (#{issue.id})"]
+        # Include requirements
+        for section_name in ["需求", "设计"]:
+            content = issue.sections.get(section_name, "")
+            if content:
+                parts.append(f"\n--- {section_name} ---\n{content}")
+        # Include code diff if available
+        code_diff = request.context.get("code_diff", "")
+        if code_diff:
+            parts.append(f"\n--- Git Diff (Code Changes) ---\n{code_diff}")
+        # Include latest review for context
+        latest_review = request.context.get("latest_review", "")
+        if latest_review:
+            parts.append(f"\n--- Previous Review ---\n{latest_review}")
+        # Add unresolved items for reviewer
+        unresolved = request.context.get("unresolved_feedback", "")
+        if unresolved:
+            parts.append(f"\n--- {unresolved}")
+        return "\n".join(parts)
+
     async def review(self, request: AgentRequest) -> ReviewOutput:
         cwd = request.context.get("worktree_path")
-        context = self._build_context(request)
+        # Use diff-aware context if code_diff provided (develop review),
+        # otherwise use standard context (design review)
+        if request.context.get("code_diff"):
+            context = self._build_review_context(request)
+        else:
+            context = self._build_context(request)
 
         system = dedent("""\
-            You are a code reviewer. Review the design or implementation
-            against the requirements.
+            You are a code reviewer. The code has already passed build and all tests.
+            Focus on design quality, correctness of logic, and potential issues
+            that tests don't catch.
 
             For each issue found, classify its severity:
-            - critical: breaks core functionality or security
-            - high: missing required feature or significant bug
-            - medium: code quality issue or minor missing feature
-            - low: style, naming, or minor improvement
+            - critical: breaks core functionality, security vulnerability, data corruption
+            - high: missing required feature, significant logic bug
+            - medium: code quality, minor missing feature, style
+            - low: naming, minor improvement
 
-            Output ONLY JSON: {
-                "passed": bool,
-                "score": 0-100,
-                "resolved_item_ids": ["F1", "F3"],
+            Also check if previously unresolved feedback items are now addressed.
+            Propose 1-3 new test cases if you find issues worth testing.
+
+            Output ONLY JSON:
+            {
                 "comments": [{"severity": "...", "message": "...", "location": "..."}],
+                "resolved_item_ids": ["F1", "F3"],
                 "proposed_tests": [{"name": "test_name", "description": "what to test", "expected_behavior": "expected result"}]
             }
-
-            Score guide:
-            - 90-100: production ready, no significant issues
-            - 70-89: acceptable with minor issues that can be fixed in next phase
-            - 50-69: significant gaps that need addressing before proceeding
-            - 0-49: fundamental problems, needs major rework
-
-            Pass only if there are no critical or high severity issues.
         """)
         prompt = f"{context}\n\nReview the current design/implementation against requirements."
 
@@ -257,8 +280,6 @@ class ClaudeCodeAgent(BaseAgent):
                     location=c.get("location"),
                 ))
             return ReviewOutput(
-                passed=data.get("passed", False),
-                score=data.get("score", 50),
                 comments=comments,
                 resolved_item_ids=data.get("resolved_item_ids", []),
                 proposed_tests=[TestCase(
@@ -270,55 +291,12 @@ class ClaudeCodeAgent(BaseAgent):
                 usage=usage,
             )
         except (json.JSONDecodeError, KeyError, IndexError) as e:
-            logger.warning("Failed to parse review JSON, treating as not passed: %s", e)
+            logger.warning("Failed to parse review JSON, treating as high-severity issue: %s", e)
             return ReviewOutput(
-                passed=False,
-                score=30,
                 comments=[ReviewComment(
-                    severity=Severity.MEDIUM,
+                    severity=Severity.HIGH,
                     message=f"Review output could not be parsed: {result[:200]}",
                 )],
                 reviewer="claude-code",
                 usage=usage,
             )
-
-    async def test(self, request: AgentRequest) -> TestOutput:
-        cwd = request.context.get("worktree_path")
-        context = self._build_context(request)
-
-        system = dedent("""\
-            You are a QA engineer. Run the tests and benchmarks for this project.
-
-            1. First, look at the project structure and find test files
-            2. Run the tests (pytest or appropriate test runner)
-            3. If there are benchmark/acceptance criteria in the requirements,
-               verify them
-            4. Report results with pass/fail counts
-
-            If tests fail, analyze the root cause and provide a recommendation:
-            - If the failure is due to a code bug: set recommendation to "develop"
-            - If the failure is due to a missing feature not in the design:
-              set recommendation to "design"
-
-            End your output with a line in this exact format:
-            RESULT: PASS  (if all tests/benchmarks pass)
-            or
-            RESULT: FAIL recommendation=develop  (or recommendation=design)
-        """)
-        prompt = f"{context}\n\nRun all tests and benchmarks. Report results."
-        result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
-
-        success = False
-        recommendation = None
-        for line in reversed(result.strip().splitlines()):
-            line = line.strip()
-            if line.startswith("RESULT:"):
-                if "PASS" in line:
-                    success = True
-                else:
-                    success = False
-                    if "recommendation=" in line:
-                        recommendation = line.split("recommendation=")[1].strip()
-                break
-
-        return TestOutput(report=result, success=success, recommendation=recommendation, usage=usage)

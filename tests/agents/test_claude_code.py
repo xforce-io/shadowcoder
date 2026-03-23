@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock, patch
 from shadowcoder.agents.claude_code import ClaudeCodeAgent
-from shadowcoder.agents.types import AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput
+from shadowcoder.agents.types import AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput
 from shadowcoder.core.models import Issue, IssueStatus
 from datetime import datetime
 
@@ -59,24 +59,31 @@ async def test_develop_returns_output(agent, sample_request):
 async def test_review_returns_result(agent, sample_request):
     sample_request.action = "review"
     agent._run_claude_with_usage = AsyncMock(
-        return_value=('{"passed": true, "score": 95, "comments": []}', _make_usage()))
+        return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
     result = await agent.review(sample_request)
     assert isinstance(result, ReviewOutput)
-    assert result.passed is True
-    assert result.score == 95
+    assert result.comments == []
     assert result.reviewer == "claude-code"
     assert result.usage is not None
+
+
+async def test_review_no_score_or_passed(agent, sample_request):
+    """ReviewOutput should not have score or passed fields."""
+    sample_request.action = "review"
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
+    result = await agent.review(sample_request)
+    assert not hasattr(result, "score")
+    assert not hasattr(result, "passed")
 
 
 async def test_review_with_issues(agent, sample_request):
     sample_request.action = "review"
     agent._run_claude_with_usage = AsyncMock(return_value=(
-        '{"passed": false, "score": 40, "comments": [{"severity": "high", "message": "Missing error handling", "location": "parser.py:45"}]}',
+        '{"comments": [{"severity": "high", "message": "Missing error handling", "location": "parser.py:45"}], "resolved_item_ids": [], "proposed_tests": []}',
         _make_usage(),
     ))
     result = await agent.review(sample_request)
-    assert not result.passed
-    assert result.score == 40
     assert len(result.comments) == 1
     assert result.comments[0].message == "Missing error handling"
     assert result.comments[0].location == "parser.py:45"
@@ -87,35 +94,21 @@ async def test_review_unparseable_json(agent, sample_request):
     agent._run_claude_with_usage = AsyncMock(
         return_value=("This is not JSON at all", _make_usage()))
     result = await agent.review(sample_request)
-    assert not result.passed  # defaults to not passed on parse error
-    assert result.score == 30  # default score on parse failure
+    # defaults to HIGH severity comment on parse error
+    assert len(result.comments) == 1
+    from shadowcoder.agents.types import Severity
+    assert result.comments[0].severity == Severity.HIGH
 
 
-async def test_test_pass(agent, sample_request):
-    sample_request.action = "test"
+async def test_review_with_code_diff_uses_diff_context(agent, sample_request):
+    """When code_diff is in context, _build_review_context is used."""
+    sample_request.action = "review"
+    sample_request.context["code_diff"] = "diff --git ..."
     agent._run_claude_with_usage = AsyncMock(
-        return_value=("All tests passed\nRESULT: PASS", _make_usage()))
-    result = await agent.test(sample_request)
-    assert isinstance(result, TestOutput)
-    assert result.success is True
-    assert result.usage is not None
-
-
-async def test_test_fail_with_recommendation(agent, sample_request):
-    sample_request.action = "test"
-    agent._run_claude_with_usage = AsyncMock(
-        return_value=("3 tests failed\nRESULT: FAIL recommendation=develop", _make_usage()))
-    result = await agent.test(sample_request)
-    assert isinstance(result, TestOutput)
-    assert result.success is False
-    assert result.recommendation == "develop"
-
-
-async def test_test_fail_design_recommendation(agent, sample_request):
-    sample_request.action = "test"
-    agent._run_claude_with_usage = AsyncMock(
-        return_value=("Missing feature\nRESULT: FAIL recommendation=design", _make_usage()))
-    result = await agent.test(sample_request)
-    assert isinstance(result, TestOutput)
-    assert result.success is False
-    assert result.recommendation == "design"
+        return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
+    result = await agent.review(sample_request)
+    assert isinstance(result, ReviewOutput)
+    # Verify the prompt was built with review context (diff-aware)
+    call_args = agent._run_claude_with_usage.call_args
+    prompt = call_args[0][0]
+    assert "diff" in prompt.lower() or "Git Diff" in prompt

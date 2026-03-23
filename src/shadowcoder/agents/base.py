@@ -4,7 +4,7 @@ import asyncio
 from abc import ABC, abstractmethod
 
 from shadowcoder.agents.types import (
-    AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
+    AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput,
 )
 
 
@@ -26,10 +26,6 @@ class BaseAgent(ABC):
 
     @abstractmethod
     async def review(self, request: AgentRequest) -> ReviewOutput:
-        ...
-
-    @abstractmethod
-    async def test(self, request: AgentRequest) -> TestOutput:
         ...
 
     async def _get_files_changed(self, worktree_path: str) -> list[str]:

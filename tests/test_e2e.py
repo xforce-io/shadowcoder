@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -29,7 +29,7 @@ class E2EAgent(BaseAgent):
 
     def __init__(self, config: dict):
         super().__init__(config)
-        self.execute_calls: list[AgentRequest] = []  # tracks design/develop/test calls
+        self.execute_calls: list[AgentRequest] = []  # tracks design/develop calls
         self.review_calls: list[AgentRequest] = []
         self._review_fail_count = 0  # how many review calls should fail before passing
         self._review_call_counter = 0
@@ -68,41 +68,21 @@ Created `test_calc.py` with 8 test cases.
 - `test_calc.py` (new)"""
         return DevelopOutput(summary=summary)
 
-    async def test(self, request: AgentRequest) -> TestOutput:
-        self.execute_calls.append(request)
-        report = """## Test Results
-```
-test_add .................. PASSED
-test_subtract ............. PASSED
-test_multiply ............. PASSED
-test_divide ............... PASSED
-test_divide_by_zero ....... PASSED
-test_add_negative ......... PASSED
-test_multiply_zero ........ PASSED
-test_subtract_self ........ PASSED
-```
-8/8 tests passed."""
-        return TestOutput(report=report, success=True, passed_count=8, total_count=8)
-
     async def review(self, request: AgentRequest) -> ReviewOutput:
         self.review_calls.append(request)
         self._review_call_counter += 1
 
         if self._review_call_counter <= self._review_fail_count:
             return ReviewOutput(
-                passed=False,
-                score=40,
                 comments=[
                     ReviewComment(
-                        severity=Severity.HIGH,
+                        severity=Severity.CRITICAL,
                         message=f"Review round {self._review_call_counter}: needs improvement",
                     ),
                 ],
                 reviewer="e2e-reviewer",
             )
         return ReviewOutput(
-            passed=True,
-            score=95,
             comments=[
                 ReviewComment(
                     severity=Severity.LOW,
@@ -176,6 +156,10 @@ def e2e_system(e2e_repo, e2e_config, e2e_agent):
     registry._instances["claude-code"] = e2e_agent
 
     engine = Engine(bus, issue_store, task_manager, registry, e2e_config, str(e2e_repo))
+    # Mock gate and diff (no real test suite in e2e test repo)
+    from unittest.mock import AsyncMock
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
 
     return {
         "bus": bus,
@@ -192,7 +176,7 @@ def e2e_system(e2e_repo, e2e_config, e2e_agent):
 
 
 async def test_e2e_happy_path(e2e_system):
-    """Full lifecycle: create → design → develop → test → done.
+    """Full lifecycle: create → design → develop → done.
     Verify real files, real git worktrees, real state transitions."""
     bus = e2e_system["bus"]
     store = e2e_system["store"]
@@ -258,7 +242,7 @@ async def test_e2e_happy_path(e2e_system):
     await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
 
     issue = store.get(1)
-    assert issue.status == IssueStatus.TESTING
+    assert issue.status == IssueStatus.DONE
     assert "Implementation" in issue.sections.get("开发步骤", "")
     assert "Dev Review" in issue.sections
 
@@ -266,19 +250,12 @@ async def test_e2e_happy_path(e2e_system):
     assert len(agent.execute_calls) == 2
     assert agent.execute_calls[1].action == "develop"
 
-    # --- Step 4: Test ---
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.DONE
-    assert "8/8 tests passed" in issue.sections.get("测试", "")
-
     # --- Verify final state on disk ---
     final_content = issue_file.read_text()
     assert "status: done" in final_content
 
     # Verify all events were fired
-    assert len(events[MessageType.EVT_TASK_COMPLETED]) >= 3  # design, develop, test
+    assert len(events[MessageType.EVT_TASK_COMPLETED]) >= 2  # design, develop
 
 
 async def test_e2e_design_review_retry(e2e_system):
@@ -288,7 +265,7 @@ async def test_e2e_design_review_retry(e2e_system):
     store = e2e_system["store"]
     agent = e2e_system["agent"]
 
-    # Make review fail twice
+    # Make review fail twice (CRITICAL → retry)
     agent.set_review_fail_count(2)
 
     review_events = []
@@ -321,7 +298,7 @@ async def test_e2e_design_review_retry(e2e_system):
     # Log file contains full history (all rounds)
     log = store.get_log(1)
     assert "needs improvement" in log
-    assert "NOT PASSED" in log
+    assert "RETRY" in log
 
 
 async def test_e2e_review_exhaustion_and_approve(e2e_system):

@@ -1,4 +1,4 @@
-"""Tests for Engine._on_test retry loop with recommendation routing."""
+"""Tests for Engine._run_develop_cycle gate logic (replaced old _on_test retry loop)."""
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from shadowcoder.core.engine import Engine
@@ -9,7 +9,7 @@ from shadowcoder.core.models import IssueStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
     AgentRequest, AgentActionFailed,
-    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, TestOutput,
+    DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput,
     ReviewComment, Severity,
 )
 
@@ -45,171 +45,161 @@ def make_engine(bus, store, task_mgr, registry, config, repo_path="/tmp/repo"):
     return Engine(bus, store, task_mgr, registry, config, repo_path)
 
 
-def _setup_issue_at_testing(store):
-    """Create an issue and transition it to TESTING status."""
+def _setup_issue_at_approved(store):
+    """Create an issue and transition it to APPROVED status."""
     store.create("Test")
     store.transition_status(1, IssueStatus.DESIGNING)
     store.transition_status(1, IssueStatus.DESIGN_REVIEW)
     store.transition_status(1, IssueStatus.APPROVED)
-    store.transition_status(1, IssueStatus.DEVELOPING)
-    store.transition_status(1, IssueStatus.DEV_REVIEW)
-    store.transition_status(1, IssueStatus.TESTING)
 
 
-async def test_test_retry_with_develop_recommendation(bus, store, task_mgr, config):
-    """Test fails with recommendation=develop → auto develop → re-test → pass."""
-    test_call_count = 0
+async def test_develop_gate_fail_then_pass(bus, store, task_mgr, config):
+    """Gate fails first round, passes second round → DONE."""
+    gate_call_count = 0
 
-    async def test_side_effect(request):
-        nonlocal test_call_count
-        test_call_count += 1
-        if test_call_count == 1:
-            return TestOutput(report="benchmark 5/7", success=False,
-                recommendation="develop")
-        return TestOutput(report="benchmark 7/7", success=True)
+    async def gate_side_effect(issue_id, worktree_path, proposed_tests):
+        nonlocal gate_call_count
+        gate_call_count += 1
+        if gate_call_count == 1:
+            return False, "build failed", "error output"
+        return True, "gate passed", "ok"
 
     agent = AsyncMock()
-    agent.test = AsyncMock(side_effect=test_side_effect)
-    agent.develop = AsyncMock(return_value=DevelopOutput(summary="fixed code"))
-    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
-    agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, score=95, comments=[], reviewer="mock"))
-    reg = MagicMock()
-    reg.get = MagicMock(return_value=agent)
-
-    engine = make_engine(bus, store, task_mgr, reg, config)
-    _setup_issue_at_testing(store)
-
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.DONE
-    assert test_call_count == 2  # test failed once, then passed
-
-
-async def test_test_retry_with_design_recommendation(bus, store, task_mgr, config):
-    """Test fails with recommendation=design → auto design+develop → re-test → pass."""
-    test_call_count = 0
-
-    async def test_side_effect(request):
-        nonlocal test_call_count
-        test_call_count += 1
-        if test_call_count == 1:
-            return TestOutput(report="missing feature", success=False,
-                recommendation="design")
-        return TestOutput(report="all pass", success=True)
-
-    agent = AsyncMock()
-    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
-    agent.test = AsyncMock(side_effect=test_side_effect)
-    agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
-    agent.design = AsyncMock(return_value=DesignOutput(document="output"))
-    agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, score=95, comments=[], reviewer="mock"))
-    reg = MagicMock()
-    reg.get = MagicMock(return_value=agent)
-
-    engine = make_engine(bus, store, task_mgr, reg, config)
-    _setup_issue_at_testing(store)
-
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.DONE
-
-
-async def test_test_no_recommendation_stays_failed(bus, store, task_mgr, config):
-    """Test fails with no recommendation → FAILED, no auto-retry."""
-    agent = AsyncMock()
-    agent.test = AsyncMock(return_value=TestOutput(
-        report="failed", success=False, recommendation=None))
-    reg = MagicMock()
-    reg.get = MagicMock(return_value=agent)
-
-    engine = make_engine(bus, store, task_mgr, reg, config)
-    _setup_issue_at_testing(store)
-
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
-
-    issue = store.get(1)
-    assert issue.status == IssueStatus.FAILED
-
-
-async def test_test_retries_exhausted_blocked(bus, store, task_mgr, config):
-    """Test keeps failing with recommendation=develop → exhausts retries → BLOCKED."""
-    agent = AsyncMock()
-    agent.test = AsyncMock(return_value=TestOutput(
-        report="still failing", success=False, recommendation="develop"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
-    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
-    agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, score=95, comments=[], reviewer="mock"))
+    agent.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
     engine = make_engine(bus, store, task_mgr, reg, config)
-    _setup_issue_at_testing(store)
+    engine._gate_check = AsyncMock(side_effect=gate_side_effect)
+    engine._get_code_diff = AsyncMock(return_value="")
+
+    _setup_issue_at_approved(store)
+
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.DONE
+    assert gate_call_count == 2  # gate failed once, then passed
+
+
+async def test_develop_gate_always_fail_blocked(bus, store, task_mgr, config):
+    """Gate always fails → exhausts max_rounds → BLOCKED."""
+    agent = AsyncMock()
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    engine._gate_check = AsyncMock(return_value=(False, "tests failed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
+
+    _setup_issue_at_approved(store)
 
     events = []
     async def _on_fail(m): events.append(m)
     bus.subscribe(MessageType.EVT_TASK_FAILED, _on_fail)
 
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
 
     issue = store.get(1)
     assert issue.status == IssueStatus.BLOCKED
-
-    # Should have attempt counts in events
-    assert any("retries" in e.payload.get("reason", "") for e in events)
+    assert any("review not passed" in e.payload.get("reason", "") for e in events)
 
 
-async def test_test_recommendation_develop_fails_review_stops(bus, store, task_mgr, config):
-    """Test fails → develop auto-triggered → develop review fails all rounds →
-    develop goes BLOCKED → test loop stops (doesn't retry)."""
+async def test_develop_review_critical_retries(bus, store, task_mgr, config):
+    """Review has CRITICAL comment → retry develop → eventually DONE."""
+    review_call_count = 0
+
+    async def review_side_effect(request):
+        nonlocal review_call_count
+        review_call_count += 1
+        if review_call_count == 1:
+            return ReviewOutput(
+                comments=[ReviewComment(severity=Severity.CRITICAL, message="critical bug")],
+                reviewer="mock")
+        return ReviewOutput(comments=[], reviewer="mock")
+
     agent = AsyncMock()
-    agent.test = AsyncMock(return_value=TestOutput(
-        report="fail", success=False, recommendation="develop"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
-    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
+    agent.review = AsyncMock(side_effect=review_side_effect)
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
+
+    _setup_issue_at_approved(store)
+
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.DONE
+    assert review_call_count == 2
+
+
+async def test_develop_review_conditional_pass(bus, store, task_mgr, config):
+    """Review has HIGH=1 (conditional pass) → DONE immediately."""
+    agent = AsyncMock()
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=False,
-        score=40,
-        comments=[ReviewComment(severity=Severity.HIGH, message="bad")],
+        comments=[ReviewComment(severity=Severity.HIGH, message="minor high issue")],
         reviewer="mock",
     ))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
 
     engine = make_engine(bus, store, task_mgr, reg, config)
-    _setup_issue_at_testing(store)
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._get_code_diff = AsyncMock(return_value="")
 
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
+    _setup_issue_at_approved(store)
+
+    completed_events = []
+    bus.subscribe(MessageType.EVT_TASK_COMPLETED, lambda m: completed_events.append(m))
+
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
 
     issue = store.get(1)
-    # develop's review loop exhausted → issue is BLOCKED (from develop, not test)
-    assert issue.status == IssueStatus.BLOCKED
+    assert issue.status == IssueStatus.DONE
+    assert len(completed_events) == 1
 
 
-async def test_test_event_includes_recommendation(bus, store, task_mgr, config):
-    """EVT_TASK_FAILED payload includes the recommendation."""
-    agent = AsyncMock()
-    agent.test = AsyncMock(return_value=TestOutput(
-        report="fail", success=False, recommendation="develop"))
-    agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
-    agent.design = AsyncMock(return_value=DesignOutput(document="design"))
-    agent.review = AsyncMock(return_value=ReviewOutput(
-        passed=True, score=95, comments=[], reviewer="mock"))
-    reg = MagicMock()
-    reg.get = MagicMock(return_value=agent)
+async def test_review_decision_logic():
+    """Test _review_decision with various severity counts."""
+    from shadowcoder.core.engine import Engine as E
+    from shadowcoder.agents.types import ReviewOutput, ReviewComment, Severity
 
-    engine = make_engine(bus, store, task_mgr, reg, config)
-    _setup_issue_at_testing(store)
+    engine_mock = MagicMock(spec=E)
 
-    events = []
-    async def _h(m): events.append(m)
-    bus.subscribe(MessageType.EVT_TASK_FAILED, _h)
+    # No comments → pass
+    review_pass = ReviewOutput(comments=[], reviewer="mock")
+    assert E._review_decision(engine_mock, review_pass) == "pass"
 
-    await bus.publish(Message(MessageType.CMD_TEST, {"issue_id": 1}))
+    # HIGH=1 → conditional_pass
+    review_cond = ReviewOutput(comments=[
+        ReviewComment(severity=Severity.HIGH, message="h1")
+    ], reviewer="mock")
+    assert E._review_decision(engine_mock, review_cond) == "conditional_pass"
 
-    # First EVT_TASK_FAILED should have recommendation
-    assert events[0].payload["recommendation"] == "develop"
+    # HIGH=2 → conditional_pass
+    review_cond2 = ReviewOutput(comments=[
+        ReviewComment(severity=Severity.HIGH, message="h1"),
+        ReviewComment(severity=Severity.HIGH, message="h2"),
+    ], reviewer="mock")
+    assert E._review_decision(engine_mock, review_cond2) == "conditional_pass"
+
+    # HIGH=3 → retry
+    review_retry = ReviewOutput(comments=[
+        ReviewComment(severity=Severity.HIGH, message="h1"),
+        ReviewComment(severity=Severity.HIGH, message="h2"),
+        ReviewComment(severity=Severity.HIGH, message="h3"),
+    ], reviewer="mock")
+    assert E._review_decision(engine_mock, review_retry) == "retry"
+
+    # CRITICAL=1 → retry (even if no HIGH)
+    review_critical = ReviewOutput(comments=[
+        ReviewComment(severity=Severity.CRITICAL, message="c1")
+    ], reviewer="mock")
+    assert E._review_decision(engine_mock, review_critical) == "retry"

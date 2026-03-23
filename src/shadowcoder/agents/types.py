@@ -70,22 +70,10 @@ class TestCase:
 
 @dataclass
 class ReviewOutput:
-    passed: bool                    # kept for backward compat, Engine overrides based on score
-    score: int = 50                 # 0-100 confidence score
     comments: list[ReviewComment] = field(default_factory=list)
     resolved_item_ids: list[str] = field(default_factory=list)
     proposed_tests: list[TestCase] = field(default_factory=list)
     reviewer: str = ""
-    usage: AgentUsage | None = None
-
-
-@dataclass
-class TestOutput:
-    report: str
-    success: bool
-    passed_count: int | None = None
-    total_count: int | None = None
-    recommendation: str | None = None
     usage: AgentUsage | None = None
 
 

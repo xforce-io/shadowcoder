@@ -12,7 +12,7 @@ class MessageType(Enum):
     CMD_CREATE_ISSUE = "cmd.create_issue"
     CMD_DESIGN = "cmd.design"
     CMD_DEVELOP = "cmd.develop"
-    CMD_TEST = "cmd.test"
+    CMD_RUN = "cmd.run"
     CMD_LIST = "cmd.list"
     CMD_INFO = "cmd.info"
     CMD_RESUME = "cmd.resume"
