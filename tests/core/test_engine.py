@@ -453,3 +453,38 @@ async def test_run_existing_issue(bus, store, task_mgr, registry_with, config):
     await bus.publish(Message(MessageType.CMD_RUN, {"issue_id": 1}))
 
     assert store.get(1).status == IssueStatus.DONE
+
+
+async def test_gate_fail_escalation(bus, store, task_mgr, config):
+    """Gate fails twice → reviewer gets called to analyze."""
+    agent = AsyncMock()
+    agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
+    agent.review = AsyncMock(return_value=ReviewOutput(
+        comments=[ReviewComment(severity=Severity.MEDIUM, message="suggestion")],
+        reviewer="mock"))
+    agent.preflight = AsyncMock(return_value=PreflightOutput(
+        feasibility="high", estimated_complexity="moderate"))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    issue = store.create("Test")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+
+    # Mock gate to fail twice then pass
+    call_count = 0
+    async def mock_gate(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 2:
+            return False, "tests failed", "error output here"
+        return True, "gate passed", "all tests pass"
+    engine._gate_check = mock_gate
+    engine._get_code_diff = AsyncMock(return_value="diff content")
+
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+    # Reviewer should have been called for gate escalation + normal review
+    assert agent.review.call_count >= 2  # at least: 1 escalation + 1 normal review

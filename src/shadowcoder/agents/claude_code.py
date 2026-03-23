@@ -125,6 +125,18 @@ class ClaudeCodeAgent(BaseAgent):
         unresolved = request.context.get("unresolved_feedback", "")
         if unresolved:
             parts.append(f"\n--- {unresolved}")
+        # Add code diff if available
+        code_diff = request.context.get("code_diff", "")
+        if code_diff:
+            parts.append(f"\n--- Code Diff ---\n{code_diff[:30000]}")  # cap at 30K chars
+        # Add gate output for developer to diagnose test failures
+        gate_output = request.context.get("gate_output", "")
+        if gate_output:
+            parts.append(f"\n--- Gate Output (test failures) ---\n{gate_output}")
+        # Add gate failure output for reviewer to analyze
+        gate_failure = request.context.get("gate_failure_output", "")
+        if gate_failure:
+            parts.append(f"\n--- Gate Failure Output ---\n{gate_failure}")
         return "\n".join(parts)
 
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
@@ -238,9 +250,10 @@ class ClaudeCodeAgent(BaseAgent):
             context = self._build_context(request)
 
         system = dedent("""\
-            You are a code reviewer. The code has already passed build and all tests.
-            Focus on design quality, correctness of logic, and potential issues
-            that tests don't catch.
+            You are reviewing a code change. The code diff is provided below.
+            The code has already passed build and all tests (if reviewing after gate pass).
+            If gate failure output is provided, analyze why tests are failing and suggest fixes.
+            Focus on: logic correctness, design quality, potential issues that tests don't catch.
 
             For each issue found, classify its severity:
             - critical: breaks core functionality, security vulnerability, data corruption

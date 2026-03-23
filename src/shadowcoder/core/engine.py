@@ -477,6 +477,9 @@ class Engine:
         proposed_tests = fb.get("proposed_tests", [])
 
         try:
+            gate_fail_count = 0
+            last_gate_output = ""
+
             for round_num in range(1, max_rounds + 1):
                 issue = self.issue_store.get(issue.id)
                 if issue.status != IssueStatus.DEVELOPING:
@@ -494,6 +497,7 @@ class Engine:
                         "latest_review": latest_review,
                         "feedback_summary": self._format_feedback_for_agent(issue.id),
                         "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
+                        "gate_output": last_gate_output[-3000:] if last_gate_output else "",
                     })
 
                 output = await agent.develop(request)
@@ -527,13 +531,45 @@ class Engine:
                 gate_ok, gate_msg, gate_output = await self._gate_check(
                     issue.id, task.worktree_path, proposed_tests)
                 if not gate_ok:
-                    self._log(issue.id, f"Gate FAIL R{round_num}: {gate_msg}")
+                    gate_fail_count += 1
+                    self._log(issue.id, f"Gate FAIL ({gate_fail_count}): {gate_msg}")
                     if gate_output:
                         self._log(issue.id, f"Gate output (last 1000 chars):\n{gate_output[-1000:]}")
+                    last_gate_output = gate_output
+
+                    if gate_fail_count >= 2:
+                        # Escalate: ask reviewer to analyze gate failure
+                        self._log(issue.id, "Gate 连续失败，升级给 reviewer 分析")
+                        reviewer_names = self.config.get_reviewers("develop")
+                        if reviewer_names:
+                            reviewer = self.agents.get(reviewer_names[0])
+                            try:
+                                code_diff_for_escalation = ""
+                                if task.worktree_path:
+                                    try:
+                                        code_diff_for_escalation = await self._get_code_diff(task.worktree_path)
+                                    except Exception:
+                                        pass
+                                review_request = AgentRequest(action="review", issue=issue,
+                                    context={
+                                        "worktree_path": task.worktree_path,
+                                        "code_diff": code_diff_for_escalation,
+                                        "gate_failure_output": gate_output[-3000:],
+                                        "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
+                                    })
+                                review = await reviewer.review(review_request)
+                                self._update_feedback(issue.id, review, round_num)
+                                self.issue_store.append_review(issue.id, "Dev Review", review)
+                            except Exception:
+                                pass  # reviewer analysis is best-effort
+                        gate_fail_count = 0  # reset after escalation
+
                     issue = self.issue_store.get(issue.id)
                     continue  # back to develop, skip review
 
                 self._log(issue.id, f"Gate PASS R{round_num}")
+                gate_fail_count = 0  # reset on gate pass
+                last_gate_output = ""
 
                 # Review (neural, based on git diff)
                 self.issue_store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
