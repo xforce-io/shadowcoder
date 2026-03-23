@@ -193,6 +193,14 @@ src/shadowcoder/
 
 138 tests. 18 source files. ~1,700 lines of Python.
 
+## Known Limitations
+
+- **Cost tracking incomplete**: `AgentUsage` fields are defined but the Claude CLI JSON response parsing does not reliably extract token counts and costs. Usage summary shows `$0.0000`.
+- **Go validation caveat**: The Go SQL engine was validated before independent test verification existed. Its results are based on manual `go test` runs, not the automated verification loop.
+- **No graceful stop**: Killing a running agent requires `pkill`. A `stop` command is not yet implemented.
+- **No checkpoint/resume**: If a long develop session is interrupted, there is no automatic recovery from partial progress.
+- **Single reviewer model**: Design and code review currently use the same agent instance. Cross-model review (e.g., Opus reviewing Sonnet's output) is planned but not implemented.
+
 ## License
 
 MIT

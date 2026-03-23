@@ -193,6 +193,14 @@ src/shadowcoder/
 
 138 个测试。18 个源文件。约 1,700 行 Python。
 
+## 已知限制
+
+- **成本追踪不完整**：`AgentUsage` 字段已定义，但 Claude CLI 的 JSON 返回中 token 和费用解析不可靠，usage 显示 `$0.0000`。
+- **Go 验证说明**：Go SQL 引擎在独立测试验证功能实现之前完成验证，结果基于手动 `go test`，非自动化验证循环。
+- **无优雅停止**：终止正在运行的 agent 需要 `pkill`，`stop` 命令尚未实现。
+- **无断点恢复**：长时间 develop 过程中断后，无法从部分进度自动恢复。
+- **单 reviewer 模型**：设计和代码 review 目前使用同一个 agent 实例。跨模型 review（如 Opus 审查 Sonnet 的输出）已规划但未实现。
+
 ## License
 
 MIT
