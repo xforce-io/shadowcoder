@@ -50,10 +50,31 @@ class DevelopOutput:
 
 
 @dataclass
+class FeedbackItem:
+    id: str
+    category: str
+    description: str
+    round_introduced: int
+    times_raised: int = 1
+    resolved: bool = False
+    escalation_level: int = 1
+
+
+@dataclass
+class TestCase:
+    name: str
+    description: str
+    expected_behavior: str
+    category: str = "acceptance"
+
+
+@dataclass
 class ReviewOutput:
     passed: bool                    # kept for backward compat, Engine overrides based on score
     score: int = 50                 # 0-100 confidence score
     comments: list[ReviewComment] = field(default_factory=list)
+    resolved_item_ids: list[str] = field(default_factory=list)
+    proposed_tests: list[TestCase] = field(default_factory=list)
     reviewer: str = ""
     usage: AgentUsage | None = None
 

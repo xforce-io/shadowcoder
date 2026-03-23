@@ -9,7 +9,7 @@ from textwrap import dedent
 from shadowcoder.agents.base import BaseAgent
 from shadowcoder.agents.types import (
     AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput,
-    ReviewOutput, TestOutput, ReviewComment, Severity,
+    ReviewOutput, TestCase, TestOutput, ReviewComment, Severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,18 @@ class ClaudeCodeAgent(BaseAgent):
         latest_review = request.context.get("latest_review", "")
         if latest_review:
             parts.append(f"\n--- Latest Review Feedback ---\n{latest_review}")
+        # Add feedback summary if available
+        feedback = request.context.get("feedback_summary", "")
+        if feedback:
+            parts.append(f"\n--- Feedback Status ---\n{feedback}")
+        # Add acceptance tests for developer
+        acc_tests = request.context.get("acceptance_tests", "")
+        if acc_tests:
+            parts.append(f"\n--- {acc_tests}")
+        # Add unresolved items for reviewer
+        unresolved = request.context.get("unresolved_feedback", "")
+        if unresolved:
+            parts.append(f"\n--- {unresolved}")
         return "\n".join(parts)
 
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
@@ -207,7 +219,13 @@ class ClaudeCodeAgent(BaseAgent):
             - medium: code quality issue or minor missing feature
             - low: style, naming, or minor improvement
 
-            Output ONLY JSON: {"passed": bool, "score": 0-100, "comments": [...]}
+            Output ONLY JSON: {
+                "passed": bool,
+                "score": 0-100,
+                "resolved_item_ids": ["F1", "F3"],
+                "comments": [{"severity": "...", "message": "...", "location": "..."}],
+                "proposed_tests": [{"name": "test_name", "description": "what to test", "expected_behavior": "expected result"}]
+            }
 
             Score guide:
             - 90-100: production ready, no significant issues
@@ -242,6 +260,12 @@ class ClaudeCodeAgent(BaseAgent):
                 passed=data.get("passed", False),
                 score=data.get("score", 50),
                 comments=comments,
+                resolved_item_ids=data.get("resolved_item_ids", []),
+                proposed_tests=[TestCase(
+                    name=t.get("name", ""),
+                    description=t.get("description", ""),
+                    expected_behavior=t.get("expected_behavior", ""),
+                ) for t in data.get("proposed_tests", [])],
                 reviewer="claude-code",
                 usage=usage,
             )

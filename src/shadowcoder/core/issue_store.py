@@ -30,6 +30,22 @@ class IssueStore:
     def _log_path(self, issue_id: int) -> Path:
         return self.base / f"{issue_id:04d}.log.md"
 
+    def _feedback_path(self, issue_id: int) -> Path:
+        return self.base / f"{issue_id:04d}.feedback.json"
+
+    def load_feedback(self, issue_id: int) -> dict:
+        path = self._feedback_path(issue_id)
+        if not path.exists():
+            return {"items": [], "proposed_tests": []}
+        import json
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_feedback(self, issue_id: int, feedback: dict) -> None:
+        path = self._feedback_path(issue_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+        path.write_text(json.dumps(feedback, indent=2, ensure_ascii=False), encoding="utf-8")
+
     def _versions_dir(self, issue_id: int) -> Path:
         return self.base / f"{issue_id:04d}.versions"
 

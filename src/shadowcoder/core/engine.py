@@ -140,21 +140,139 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_ERROR,
                     {"message": f"reviewer failed, retry {attempt}/{max_retries}"}))
 
+    def _update_feedback(self, issue_id: int, review, current_round: int):
+        """Update feedback state after a review. Pure symbolic logic."""
+        fb = self.issue_store.load_feedback(issue_id)
+        items = fb.get("items", [])
+
+        # Mark resolved items
+        resolved_ids = set(review.resolved_item_ids)
+        for item in items:
+            if item["id"] in resolved_ids and not item["resolved"]:
+                item["resolved"] = True
+                item["resolved_round"] = current_round
+
+        # Unresolved items: bump times_raised
+        for item in items:
+            if not item["resolved"] and item["id"] not in resolved_ids:
+                item["times_raised"] = item.get("times_raised", 1) + 1
+                item["escalation_level"] = min(item["times_raised"], 4)
+
+        # New comments → new FeedbackItems
+        existing_ids = {item["id"] for item in items}
+        next_num = max((int(item["id"][1:]) for item in items), default=0) + 1
+        for comment in review.comments:
+            fid = f"F{next_num}"
+            next_num += 1
+            items.append({
+                "id": fid,
+                "category": comment.severity.value,
+                "description": comment.message,
+                "round_introduced": current_round,
+                "times_raised": 1,
+                "resolved": False,
+                "escalation_level": 1,
+            })
+
+        # Accumulate proposed tests
+        tests = fb.get("proposed_tests", [])
+        for tc in review.proposed_tests:
+            if not any(t["name"] == tc.name for t in tests):
+                tests.append({
+                    "name": tc.name,
+                    "description": tc.description,
+                    "expected_behavior": tc.expected_behavior,
+                    "category": tc.category,
+                    "round_proposed": current_round,
+                })
+
+        fb["items"] = items
+        fb["proposed_tests"] = tests
+        self.issue_store.save_feedback(issue_id, fb)
+
+    def _format_feedback_for_agent(self, issue_id: int) -> str:
+        """Format feedback state for injection into agent context."""
+        fb = self.issue_store.load_feedback(issue_id)
+        items = fb.get("items", [])
+        if not items:
+            return ""
+
+        resolved = [i for i in items if i["resolved"]]
+        unresolved = [i for i in items if not i["resolved"]]
+
+        lines = []
+        if resolved:
+            lines.append(f"已解决 ({len(resolved)}/{len(items)}):")
+            for item in resolved:
+                lines.append(f"  [R{item['round_introduced']}] #{item['id']} {item['description'][:60]} ✓")
+
+        if unresolved:
+            lines.append(f"\n未解决 ({len(unresolved)}/{len(items)}):")
+            for item in unresolved:
+                escalated = self._escalate_feedback_text(item)
+                intro = item["round_introduced"]
+                raised = item["times_raised"]
+                lines.append(f"  [R{intro}, {raised}次] #{item['id']} {escalated}")
+
+        return "\n".join(lines)
+
+    def _format_unresolved_for_reviewer(self, issue_id: int) -> str:
+        """Format unresolved items for reviewer prompt."""
+        fb = self.issue_store.load_feedback(issue_id)
+        items = fb.get("items", [])
+        unresolved = [i for i in items if not i["resolved"]]
+        if not unresolved:
+            return ""
+        lines = ["当前未解决的 feedback items:"]
+        for item in unresolved:
+            lines.append(f"  #{item['id']}: {item['description'][:100]}")
+        lines.append("\n请在 review 中对每个 item 判断是否已解决（列入 resolved_item_ids）。")
+        return "\n".join(lines)
+
+    def _format_acceptance_tests_for_developer(self, issue_id: int) -> str:
+        """Format accumulated acceptance tests for developer context."""
+        fb = self.issue_store.load_feedback(issue_id)
+        tests = fb.get("proposed_tests", [])
+        if not tests:
+            return ""
+        lines = ["Acceptance tests to implement (from reviewer):"]
+        for tc in tests:
+            lines.append(f"  - {tc['name']}: {tc['description']} → {tc['expected_behavior']}")
+        lines.append("\nYou must write executable tests for each. Place them in the project's existing test directory.")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _escalate_feedback_text(item: dict) -> str:
+        times = item.get("times_raised", 1)
+        desc = item["description"]
+        if times >= 4:
+            return f"CRITICAL [第{times}次提出，需要人类介入]: {desc}"
+        elif times >= 3:
+            return f"[第{times}次] {desc}\n    请给出具体代码修改。"
+        elif times >= 2:
+            return f"[第{times}次] {desc}\n    请明确说明修改方向。"
+        return desc
+
     async def _run_all_reviewers(self, issue, task, action, review_section_key):
         reviewer_names = self.config.get_reviewers(action)
         min_score = 100
         failed_reviewers = []
+        last_review = None
 
         for rname in reviewer_names:
             reviewer = self.agents.get(rname)
             request = AgentRequest(action="review", issue=issue,
-                context={"worktree_path": task.worktree_path,
-                         "latest_review": self._get_latest_review(issue.id, review_section_key)})
+                context={
+                    "worktree_path": task.worktree_path,
+                    "latest_review": self._get_latest_review(issue.id, review_section_key),
+                    "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
+                })
             try:
                 review = await self._review_with_retry(reviewer, request)
                 self._track_usage(issue.id, review.usage)
                 self.issue_store.append_review(issue.id, review_section_key, review)
                 min_score = min(min_score, review.score)
+                last_review = review
                 await self.bus.publish(Message(MessageType.EVT_REVIEW_RESULT, {
                     "issue_id": issue.id, "reviewer": rname,
                     "passed": review.score >= 70, "score": review.score,
@@ -166,7 +284,7 @@ class Engine:
         if len(failed_reviewers) == len(reviewer_names):
             raise RuntimeError(f"All reviewers unavailable: {failed_reviewers}")
 
-        return min_score
+        return min_score, last_review
 
     async def _run_with_review(self, issue, task, action, review_stage,
                                 success_status, section_key, review_section_key):
@@ -191,6 +309,8 @@ class Engine:
                     context={
                         "worktree_path": task.worktree_path,
                         "latest_review": latest_review,
+                        "feedback_summary": self._format_feedback_for_agent(issue.id),
+                        "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id) if action == "develop" else "",
                     })
 
                 if action == "design":
@@ -232,7 +352,9 @@ class Engine:
                 self.issue_store.transition_status(issue.id, IssueStatus[review_stage.upper()])
                 issue = self.issue_store.get(issue.id)
 
-                min_score = await self._run_all_reviewers(issue, task, action, review_section_key)
+                min_score, last_review = await self._run_all_reviewers(issue, task, action, review_section_key)
+                if last_review:
+                    self._update_feedback(issue.id, last_review, round_num)
 
                 if min_score >= 90:
                     self.issue_store.transition_status(issue.id, success_status)
