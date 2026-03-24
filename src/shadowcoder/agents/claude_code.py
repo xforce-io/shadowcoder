@@ -267,10 +267,25 @@ class ClaudeCodeAgent(BaseAgent):
         else:
             context = self._build_context(request)
 
-        system = dedent("""\
-            You are reviewing a code change. The code diff is provided below.
-            The code has already passed build and all tests (if reviewing after gate pass).
-            If gate failure output is provided, analyze why tests are failing and suggest fixes.
+        # Different prompt for design review vs develop review
+        is_develop_review = bool(request.context.get("code_diff"))
+
+        if is_develop_review:
+            system = dedent("""\
+            You are reviewing a code change. The git diff is provided below.
+            The code has already passed build and all tests via the gate.
+            If gate failure output is provided, analyze why tests are failing.
+            Focus on: logic correctness, design quality, potential issues that tests don't catch.
+            Do NOT check whether source files exist — that is the gate's job.""")
+        else:
+            system = dedent("""\
+            You are reviewing a DESIGN DOCUMENT, not code.
+            Evaluate the design for: completeness, architectural soundness,
+            interface clarity, error handling strategy, and testability.
+            Do NOT check whether source files or code exist — implementation
+            happens in a later phase. Focus only on the design quality.""")
+
+        system += dedent("""
             Focus on: logic correctness, design quality, potential issues that tests don't catch.
 
             For each issue found, classify its severity:
