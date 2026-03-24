@@ -30,19 +30,21 @@ The key difference from model training: ShadowCoder optimizes the **output artif
 ## The Loop
 
 ```
-create → preflight → design ⇄ review → develop ⇄ review → test → done
-                                  ↑                          │
-                                  └──── auto-route on fail ──┘
+create → preflight → design ⇄ review → develop ⇄ gate ⇄ review → done
+                                            ↑       │
+                                            └───────┘
+                                         fail: retry develop
 ```
 
 Each stage:
 
 - **Preflight**: Quick feasibility assessment. Low feasibility blocks before wasting compute.
-- **Design**: Agent produces architecture document. Reviewer scores it.
+- **Design**: Agent produces architecture document. Reviewer evaluates it.
   - No CRITICAL or HIGH: pass. 1-2 HIGH: conditional pass. Any CRITICAL or 3+ HIGH: retry with feedback.
-- **Develop**: Agent writes actual code in an isolated git worktree. Reviewer scores it.
-- **Test**: Agent runs tests. Then Engine independently runs the configured test command and checks the exit code. Agent's self-report is overridden if the real tests fail.
-  - Failure analysis → auto-route to `develop` or `design` → re-test.
+- **Develop**: Agent writes actual code in an isolated git worktree.
+- **Gate**: Engine independently runs the test command (`cargo test`, `pytest`, etc.) and verifies acceptance tests executed and passed. Gate failure routes back to develop — never to design.
+  - After 2 consecutive gate failures, reviewer is called to analyze the failure and provide targeted feedback.
+- **Review**: Reviewer evaluates code diff after gate passes. Pass or conditional pass → done.
 
 The review severity counts are the loss signal. They decrease over rounds — a literal training curve:
 
