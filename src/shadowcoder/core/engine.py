@@ -438,8 +438,20 @@ class Engine:
                                if last_review and c.severity.value == "critical") if last_review else 0
                 high = sum(1 for c in last_review.comments
                            if last_review and c.severity.value == "high") if last_review else 0
-                self._log(issue.id,
-                    f"{action_label} Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high})")
+                if last_review:
+                    from shadowcoder.agents.types import Severity
+                    critical_msgs = [c.message[:100] for c in last_review.comments if c.severity == Severity.CRITICAL]
+                    high_msgs = [c.message[:100] for c in last_review.comments if c.severity == Severity.HIGH]
+                    detail = ""
+                    if critical_msgs:
+                        detail += "\nCRITICAL:\n" + "\n".join(f"  - {m}" for m in critical_msgs)
+                    if high_msgs:
+                        detail += "\nHIGH:\n" + "\n".join(f"  - {m}" for m in high_msgs)
+                    self._log(issue.id,
+                        f"{action_label} Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high}){detail}")
+                else:
+                    self._log(issue.id,
+                        f"{action_label} Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high})")
                 issue = self.issue_store.get(issue.id)
 
             self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
@@ -607,8 +619,20 @@ class Engine:
                                if last_review and c.severity.value == "critical") if last_review else 0
                 high = sum(1 for c in last_review.comments
                            if last_review and c.severity.value == "high") if last_review else 0
-                self._log(issue.id,
-                    f"Dev Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high})")
+                if last_review:
+                    from shadowcoder.agents.types import Severity
+                    critical_msgs = [c.message[:100] for c in last_review.comments if c.severity == Severity.CRITICAL]
+                    high_msgs = [c.message[:100] for c in last_review.comments if c.severity == Severity.HIGH]
+                    detail = ""
+                    if critical_msgs:
+                        detail += "\nCRITICAL:\n" + "\n".join(f"  - {m}" for m in critical_msgs)
+                    if high_msgs:
+                        detail += "\nHIGH:\n" + "\n".join(f"  - {m}" for m in high_msgs)
+                    self._log(issue.id,
+                        f"Dev Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high}){detail}")
+                else:
+                    self._log(issue.id,
+                        f"Dev Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high})")
                 issue = self.issue_store.get(issue.id)
 
             self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)

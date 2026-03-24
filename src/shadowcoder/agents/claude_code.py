@@ -51,7 +51,14 @@ class ClaudeCodeAgent(BaseAgent):
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
-        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode("utf-8")),
+                timeout=1800  # 30 minutes
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError("claude CLI timed out after 30 minutes")
 
         if proc.returncode != 0:
             err = stderr.decode().strip()
@@ -80,7 +87,14 @@ class ClaudeCodeAgent(BaseAgent):
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
         )
-        stdout, stderr = await proc.communicate(input=prompt.encode("utf-8"))
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=prompt.encode("utf-8")),
+                timeout=1800  # 30 minutes
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise RuntimeError("claude CLI timed out after 30 minutes")
         duration_ms = int((time.monotonic() - start) * 1000)
 
         if proc.returncode != 0:
@@ -177,9 +191,13 @@ class ClaudeCodeAgent(BaseAgent):
         context = self._build_context(request)
 
         system = dedent("""\
-            You are a senior software architect. Produce a detailed technical
-            design document. Include: architecture, components, data structures,
-            interfaces, error handling, and testing strategy.
+            You are a senior software architect. Produce a CONCISE technical
+            design document (target 5,000-15,000 characters).
+            Focus on: architecture decisions, component interfaces, data flow,
+            error handling strategy.
+            Do NOT include implementation details (code, pseudocode, function
+            bodies) — those belong in the code.
+            Do NOT repeat the requirements — reference them by name.
 
             If there are previous review comments, address each one specifically.
 
