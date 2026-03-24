@@ -54,7 +54,7 @@ class ClaudeCodeAgent(BaseAgent):
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=prompt.encode("utf-8")),
-                timeout=1800  # 30 minutes
+                timeout=3600  # 60 minutes
             )
         except asyncio.TimeoutError:
             proc.kill()
@@ -90,7 +90,7 @@ class ClaudeCodeAgent(BaseAgent):
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(input=prompt.encode("utf-8")),
-                timeout=1800  # 30 minutes
+                timeout=3600  # 60 minutes
             )
         except asyncio.TimeoutError:
             proc.kill()
