@@ -18,7 +18,7 @@ This is structurally identical to a neural-symbolic training loop:
 | Training Concept | ShadowCoder Equivalent |
 |------------------|----------------------|
 | Forward pass | Agent generates design/code |
-| Loss function | Review score (0-100) + test exit code |
+| Loss function | Review severity counts (CRITICAL/HIGH) + test exit code |
 | Backpropagation | Review feedback injected into next context |
 | Gradient clipping | Per-round feature capacity limit |
 | Early stopping | Max rounds reached, escalate to human |
@@ -39,15 +39,15 @@ Each stage:
 
 - **Preflight**: Quick feasibility assessment. Low feasibility blocks before wasting compute.
 - **Design**: Agent produces architecture document. Reviewer scores it.
-  - Score >= 90: pass. 70-89: conditional pass. < 70: retry with feedback.
+  - No CRITICAL or HIGH: pass. 1-2 HIGH: conditional pass. Any CRITICAL or 3+ HIGH: retry with feedback.
 - **Develop**: Agent writes actual code in an isolated git worktree. Reviewer scores it.
 - **Test**: Agent runs tests. Then Engine independently runs the configured test command and checks the exit code. Agent's self-report is overridden if the real tests fail.
   - Failure analysis → auto-route to `develop` or `design` → re-test.
 
-The review score is the loss signal. It decreases (improves) over rounds — a literal training curve:
+The review severity counts are the loss signal. They decrease over rounds — a literal training curve:
 
 ```
-Rust SQL Engine Design: R1=52 → R2=68 → R3=73 (converged above threshold)
+Gomoku Design: R1=CRITICAL:2,HIGH:4 → R2=CRITICAL:1,HIGH:1 → R3=CRITICAL:0,HIGH:0 (converged)
 ```
 
 ## Symbolic Constraints
@@ -55,7 +55,7 @@ Rust SQL Engine Design: R1=52 → R2=68 → R3=73 (converged above threshold)
 The "symbolic" half is what makes the system reliable:
 
 - **State machine**: Issue lifecycle with validated transitions. No skipping stages.
-- **Review scoring thresholds**: Deterministic pass/fail/conditional decisions from continuous scores.
+- **Review severity thresholds**: Deterministic pass/fail/conditional decisions based on CRITICAL/HIGH/MEDIUM/LOW comment counts.
 - **Independent test verification**: Engine runs `cargo test` / `go test` / `pytest` itself. If the exit code is non-zero, the agent's PASS is overridden to FAIL. This is the non-negotiable ground truth oracle.
 - **Budget limits**: Accumulated token cost checked after each agent call. Exceeding the limit halts the loop.
 - **Retry bounds**: Max review rounds and max test retries prevent infinite loops.
@@ -63,6 +63,8 @@ The "symbolic" half is what makes the system reliable:
 These constraints cannot be circumvented by the neural component. They are the rules of the game.
 
 ## Validated Results
+
+### SQL Database Engine
 
 Built a SQL database engine (parser, query planner, executor, storage, B-tree indexes, MVCC transactions, error handling) from a requirements document:
 
@@ -75,6 +77,28 @@ Built a SQL database engine (parser, query planner, executor, storage, B-tree in
 The Rust version demonstrates the full self-evolving loop: agent reported tests passing, but independent verification caught 2 failing performance benchmarks. The system automatically routed back to develop, the agent optimized the code, and all 44 tests passed on the next round.
 
 The Haskell version demonstrates graceful failure: the system identified (via reviewer feedback) that Haskell's STM/IO interaction model made the concurrent transaction design fundamentally problematic, and escalated to human rather than spinning endlessly.
+
+### Gomoku AI (Rust, Claude Sonnet)
+
+Gomoku AI engine with minimax + alpha-beta pruning, pattern recognition, and web interface:
+
+| Phase | Rounds | Notes |
+|-------|--------|-------|
+| Design | 3 | R1: 2 CRITICAL (mutex lock during search, no IDDFS). R3: passed |
+| Develop | 4 | R1-R3: gate failures (abort flag, tactics tests). R4: all tests pass |
+
+AI (depth=4) vs baseline: >90% win rate over 100 games. Full acceptance criteria met.
+
+### Multi-Model: LRU Cache (Python, DeepSeek-v3 via Volcengine)
+
+Thread-safe LRU cache with TTL support, validating third-party model integration:
+
+| Phase | Rounds | Notes |
+|-------|--------|-------|
+| Design | 2 | R1: 1 CRITICAL, 3 HIGH. R2: conditional pass |
+| Develop | 1 | Gate pass on first attempt. 26 tests (correctness + concurrency + performance) |
+
+Demonstrates that any model reachable via an Anthropic-compatible API can drive the full loop.
 
 ## Installation
 
@@ -98,14 +122,21 @@ agents:
       type: claude_code
       model: sonnet
       permission_mode: auto
+    volcengine:                # third-party model via compatible API
+      type: claude_code
+      model: deepseek-v3-2-251201
+      permission_mode: auto
+      env:                     # custom env vars passed to claude CLI subprocess
+        ANTHROPIC_BASE_URL: https://ark.cn-beijing.volces.com/api/coding
+        ANTHROPIC_AUTH_TOKEN: <your-key>
 
 reviewers:
   design: [claude-code]
-  develop: [claude-code]
+  develop: [claude-code]       # can mix agents, e.g. [volcengine]
 
 review_policy:
   pass_threshold: no_high_or_critical
-  max_review_rounds: 3
+  max_review_rounds: 5
   max_test_retries: 3
   # max_budget_usd: 10.0
 
@@ -118,6 +149,8 @@ issue_store:
 worktree:
   base_dir: .shadowcoder/worktrees
 ```
+
+Any model reachable via Claude CLI's `--model` flag works — including third-party models served behind an Anthropic-compatible API. Set `env` to override `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` per agent.
 
 ## Usage
 
@@ -199,7 +232,7 @@ src/shadowcoder/
 - **Go validation caveat**: The Go SQL engine was validated before independent test verification existed. Its results are based on manual `go test` runs, not the automated verification loop.
 - **No graceful stop**: Killing a running agent requires `pkill`. A `stop` command is not yet implemented.
 - **No checkpoint/resume**: If a long develop session is interrupted, there is no automatic recovery from partial progress.
-- **Single reviewer model**: Design and code review currently use the same agent instance. Cross-model review (e.g., Opus reviewing Sonnet's output) is planned but not implemented.
+- **Single repo per process**: Cannot run multiple issues in parallel against the same repo. Use separate repos or processes for concurrent work.
 
 ## License
 

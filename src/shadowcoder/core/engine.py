@@ -68,6 +68,14 @@ class Engine:
                 f"Cost: ${cost:.4f} | "
                 f"Time: {total_duration:.1f}s")
 
+    @staticmethod
+    def _truncate_output(output: str, max_chars: int = 3000) -> str:
+        """Truncate long output preserving head (compile errors) and tail (summary)."""
+        if len(output) <= max_chars:
+            return output
+        half = max_chars // 2
+        return output[:half] + "\n\n... [truncated] ...\n\n" + output[-half:]
+
     async def _run_command(self, cmd: str, cwd: str) -> tuple[bool, str]:
         """Run a shell command, return (passed, output)."""
         proc = await asyncio.create_subprocess_shell(
@@ -98,9 +106,13 @@ class Engine:
             f"Cannot detect test command for {worktree_path}. "
             f"Set build.test_command in config.")
 
+    # Common patterns that indicate a test passed (language-agnostic heuristics)
+    _PASS_PATTERNS = (" ... ok", " PASSED", " passed", "PASS: ", " ✓")
+    _SKIP_PATTERNS = (" ... ignored", " SKIPPED", " skipped", " ... skip")
+
     async def _gate_check(self, issue_id: int, worktree_path: str,
                           proposed_tests: list) -> tuple[bool, str, str]:
-        """Symbolic gate: run test command, check exit code + acceptance test names."""
+        """Symbolic gate: run test command, verify acceptance tests executed and passed."""
         test_cmd = self.config.get_test_command()
         if not test_cmd:
             if not worktree_path:
@@ -114,15 +126,45 @@ class Engine:
         if not passed:
             return False, "build/tests failed", output
 
-        # Check acceptance test names in output
-        missing = []
+        # Verify each acceptance test was actually executed and passed
+        not_passed = []
         for tc in proposed_tests:
-            if tc["name"] not in output:
-                missing.append(tc["name"])
-        if missing:
-            return False, f"acceptance tests not implemented: {missing}", output
+            name = tc["name"]
+            if name not in output:
+                not_passed.append(f"{name} (not found in output)")
+                continue
+            # Check if the test was skipped/ignored
+            if any(f"{name}{pat}" in output for pat in self._SKIP_PATTERNS):
+                not_passed.append(f"{name} (skipped/ignored)")
+                continue
+            # Check if the test actually passed (heuristic)
+            if not any(f"{name}{pat}" in output for pat in self._PASS_PATTERNS):
+                # Name present but no pass indicator — run individually as fallback
+                individual_ok = await self._run_individual_test(
+                    worktree_path, name)
+                if not individual_ok:
+                    not_passed.append(f"{name} (failed individual run)")
+
+        if not_passed:
+            return False, f"acceptance tests not passed: {not_passed}", output
 
         return True, "gate passed", output
+
+    async def _run_individual_test(self, worktree_path: str, test_name: str) -> bool:
+        """Run a single test with language-specific force-include flags."""
+        p = Path(worktree_path)
+        if (p / "Cargo.toml").exists():
+            cmd = f"cargo test {test_name} -- --include-ignored 2>&1"
+        elif (p / "go.mod").exists():
+            cmd = f"go test -run {test_name} -v ./... 2>&1"
+        elif (p / "pyproject.toml").exists() or (p / "setup.py").exists():
+            cmd = f"python -m pytest -k {test_name} -v 2>&1"
+        elif (p / "package.json").exists():
+            cmd = f"npx jest -t {test_name} 2>&1"
+        else:
+            return False  # can't determine how to run individually
+        passed, _ = await self._run_command(cmd, cwd=worktree_path)
+        return passed
 
     async def _get_code_diff(self, worktree_path: str) -> str:
         """Get git diff of all changes in the worktree."""
@@ -509,7 +551,7 @@ class Engine:
                         "latest_review": latest_review,
                         "feedback_summary": self._format_feedback_for_agent(issue.id),
                         "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
-                        "gate_output": last_gate_output[-3000:] if last_gate_output else "",
+                        "gate_output": self._truncate_output(last_gate_output) if last_gate_output else "",
                     })
 
                 output = await agent.develop(request)
@@ -566,7 +608,7 @@ class Engine:
                                     context={
                                         "worktree_path": task.worktree_path,
                                         "code_diff": code_diff_for_escalation,
-                                        "gate_failure_output": gate_output[-3000:],
+                                        "gate_failure_output": self._truncate_output(gate_output),
                                         "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
                                     })
                                 review = await reviewer.review(review_request)

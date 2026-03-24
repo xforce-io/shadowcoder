@@ -32,6 +32,16 @@ class ClaudeCodeAgent(BaseAgent):
     def _get_permission_mode(self) -> str:
         return self.config.get("permission_mode", "auto")
 
+    def _get_env(self) -> dict[str, str] | None:
+        """Build environment for subprocess, merging custom env vars if configured."""
+        custom_env = self.config.get("env")
+        if not custom_env:
+            return None  # inherit parent environment
+        import os
+        env = os.environ.copy()
+        env.update(custom_env)
+        return env
+
     async def _run_claude(self, prompt: str, cwd: str | None = None,
                           system_prompt: str | None = None) -> str:
         """Call claude CLI in print mode, return the text output."""
@@ -50,6 +60,7 @@ class ClaudeCodeAgent(BaseAgent):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=self._get_env(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -86,6 +97,7 @@ class ClaudeCodeAgent(BaseAgent):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=self._get_env(),
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -222,6 +234,8 @@ class ClaudeCodeAgent(BaseAgent):
             1. Create actual source files in the working directory
             2. Write tests
             3. Make sure the code compiles/runs without errors
+            4. Create a .gitignore appropriate for the project (e.g. /target for Rust, node_modules/ for JS)
+            5. Never mark acceptance tests as ignored/skipped — they must run with the default test command
 
             If there are previous review comments or test failures,
             address each one specifically.

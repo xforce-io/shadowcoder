@@ -14,6 +14,7 @@ Examples:
   python scripts/run_real.py ~/lab/coder-playground cleanup 1 --delete-branch
 """
 import asyncio
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,12 +29,31 @@ from shadowcoder.core.worktree import WorktreeManager
 from shadowcoder.agents.registry import AgentRegistry
 
 
+def _validate_repo_path(repo_path: str) -> None:
+    """Ensure repo_path is a git root to prevent .shadowcoder state split."""
+    try:
+        toplevel = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=repo_path, stderr=subprocess.DEVNULL,
+        ).decode().strip()
+        if Path(toplevel).resolve() != Path(repo_path).resolve():
+            print(f"ERROR: repo_path must be a git root directory.\n"
+                  f"  Given:    {repo_path}\n"
+                  f"  Git root: {toplevel}\n"
+                  f"This prevents .shadowcoder state from splitting across directories.")
+            sys.exit(1)
+    except subprocess.CalledProcessError:
+        print(f"ERROR: {repo_path} is not a git repository.")
+        sys.exit(1)
+
+
 async def main():
     if len(sys.argv) < 3:
         print(__doc__)
         sys.exit(1)
 
     repo_path = str(Path(sys.argv[1]).resolve())
+    _validate_repo_path(repo_path)
     command = sys.argv[2]
     args = sys.argv[3:]
 
