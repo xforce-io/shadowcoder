@@ -193,7 +193,7 @@ The log is append-only. Design/code sections show the latest version; previous v
 
 ## Agent Abstraction
 
-Agents implement five methods with structured return types:
+Agents implement four methods with structured return types:
 
 ```python
 class BaseAgent(ABC):
@@ -201,10 +201,11 @@ class BaseAgent(ABC):
     async def design(self, request) -> DesignOutput
     async def develop(self, request) -> DevelopOutput
     async def review(self, request) -> ReviewOutput
-    async def test(self, request) -> TestOutput
 ```
 
-Each agent handles its own output format constraints internally. The Engine never parses raw LLM output — it only consumes typed fields. Adding a new agent (Codex, LangChain, local models) means implementing these five methods.
+Testing is handled by the Engine's gate (not the agent) — it runs the test command independently and checks the exit code.
+
+Each agent handles its own output format constraints internally. The Engine never parses raw LLM output — it only consumes typed fields. Adding a new agent (Codex, LangChain, local models) means implementing these methods.
 
 ## Architecture
 
@@ -226,7 +227,7 @@ src/shadowcoder/
   cli/tui/app.py       # Textual TUI
 ```
 
-138 tests. 18 source files. ~1,700 lines of Python.
+143 tests. 18 source files. ~1,800 lines of Python.
 
 ## Known Limitations
 
@@ -235,6 +236,12 @@ src/shadowcoder/
 - **No graceful stop**: Killing a running agent requires `pkill`. A `stop` command is not yet implemented.
 - **No checkpoint/resume**: If a long develop session is interrupted, there is no automatic recovery from partial progress.
 - **Single repo per process**: Cannot run multiple issues in parallel against the same repo. Use separate repos or processes for concurrent work.
+
+## Roadmap
+
+- **Context compression**: Replace head+tail truncation with fast-model (Haiku) structured summaries for gate output and inter-agent context. Head+tail as fallback.
+- **Prompt audit**: Auto-evaluate context efficiency after each run — which fields were used by the agent, which were ignored, where context was insufficient.
+- **Parallel issues**: Support concurrent issue execution against the same repo with proper locking.
 
 ## License
 
