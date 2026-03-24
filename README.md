@@ -1,3 +1,5 @@
+[English](README.md) | [中文](README_CN.md)
+
 # ShadowCoder
 
 A neural-symbolic self-evolving development system. AI agents generate code (neural), while structured review scoring, state machines, and deterministic test verification (symbolic) drive iterative improvement — until the output converges to meet requirements.
@@ -160,10 +162,10 @@ Any model reachable via Claude CLI's `--model` flag works — including third-pa
 # Create issue with requirements
 python scripts/run_real.py /path/to/repo create "Feature" --from requirements.md
 
-# Run the loop
+# Run full loop (or individual stages)
+python scripts/run_real.py /path/to/repo run "Feature" --from requirements.md
 python scripts/run_real.py /path/to/repo design 1
 python scripts/run_real.py /path/to/repo develop 1
-python scripts/run_real.py /path/to/repo test 1
 
 # Human-in-the-loop controls
 python scripts/run_real.py /path/to/repo approve 1    # approve blocked issue
