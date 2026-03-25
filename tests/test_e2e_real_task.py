@@ -502,15 +502,31 @@ def system(playground, tmp_path):
     """Wire up the full shadowcoder system against the playground repo."""
     config_path = tmp_path / "config.yaml"
     config_path.write_text("""\
-agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
+clouds:
+  local:
+    env: {}
 
-reviewers:
-  design: [design-reviewer]
-  develop: [code-reviewer]
+models:
+  default-model:
+    cloud: local
+    model: sonnet
+
+agents:
+  claude-code:
+    type: claude_code
+    model: default-model
+  design-reviewer:
+    type: claude_code
+    model: default-model
+  code-reviewer:
+    type: claude_code
+    model: default-model
+
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [design-reviewer]
+  develop_review: [code-reviewer]
 
 review_policy:
   pass_threshold: no_high_or_critical

@@ -16,8 +16,6 @@ class AgentRegistry:
         cls._agent_classes[type_name] = agent_class
 
     def get(self, name: str) -> BaseAgent:
-        if name == "default":
-            name = self.config.get_default_agent()
         if name not in self._instances:
             agent_conf = self.config.get_agent_config(name)
             agent_type = agent_conf["type"]

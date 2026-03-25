@@ -318,14 +318,22 @@ async def test_budget_exceeded(bus, store, task_mgr, config, tmp_path):
     """Agent returns usage that exceeds the budget; issue should become BLOCKED."""
     config_path = tmp_path / "config_budget.yaml"
     config_path.write_text("""\
+clouds:
+  local:
+    env: {}
+models:
+  default-model:
+    cloud: local
+    model: sonnet
 agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
-reviewers:
-  design: [claude-code]
-  develop: [claude-code]
+  claude-code:
+    type: claude_code
+    model: default-model
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [claude-code]
+  develop_review: [claude-code]
 review_policy:
   max_review_rounds: 3
   max_budget_usd: 0.001

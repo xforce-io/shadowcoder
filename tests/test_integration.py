@@ -152,15 +152,25 @@ def integ_repo(tmp_path):
 def integ_config(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("""\
-agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
+clouds:
+  local:
+    env: {}
 
-reviewers:
-  design: [claude-code]
-  develop: [claude-code]
+models:
+  default-model:
+    cloud: local
+    model: sonnet
+
+agents:
+  claude-code:
+    type: claude_code
+    model: default-model
+
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [claude-code]
+  develop_review: [claude-code]
 
 review_policy:
   pass_threshold: no_high_or_critical
@@ -179,15 +189,25 @@ worktree:
 def integ_config_with_budget(tmp_path):
     config_path = tmp_path / "config_budget.yaml"
     config_path.write_text("""\
-agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
+clouds:
+  local:
+    env: {}
 
-reviewers:
-  design: [claude-code]
-  develop: [claude-code]
+models:
+  default-model:
+    cloud: local
+    model: sonnet
+
+agents:
+  claude-code:
+    type: claude_code
+    model: default-model
+
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [claude-code]
+  develop_review: [claude-code]
 
 review_policy:
   pass_threshold: no_high_or_critical
@@ -1427,14 +1447,22 @@ class TestStrictGateMode:
         """In strict mode, gate checks acceptance + supplementary tests."""
         config_path = tmp_path / "config_strict.yaml"
         config_path.write_text("""\
+clouds:
+  local:
+    env: {}
+models:
+  default-model:
+    cloud: local
+    model: sonnet
 agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
-reviewers:
-  design: [claude-code]
-  develop: [claude-code]
+  claude-code:
+    type: claude_code
+    model: default-model
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [claude-code]
+  develop_review: [claude-code]
 review_policy:
   max_review_rounds: 3
 gate:

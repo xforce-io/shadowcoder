@@ -27,14 +27,6 @@ def test_register_and_get(tmp_config):
     assert isinstance(agent, FakeAgent)
 
 
-def test_get_default(tmp_config):
-    AgentRegistry.register("claude_code", FakeAgent)
-    config = Config(str(tmp_config))
-    registry = AgentRegistry(config)
-    agent = registry.get("default")
-    assert isinstance(agent, FakeAgent)
-
-
 def test_get_caches(tmp_config):
     AgentRegistry.register("claude_code", FakeAgent)
     config = Config(str(tmp_config))

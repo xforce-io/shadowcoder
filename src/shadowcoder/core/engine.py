@@ -525,7 +525,7 @@ class Engine:
 
     async def _run_all_reviewers(self, issue, task, action, review_section_key,
                                   code_diff: str = ""):
-        reviewer_names = self.config.get_reviewers(action)
+        reviewer_names = self.config.get_agent_for_phase(f"{action}_review")
         failed_reviewers = []
         last_review = None
 
@@ -576,7 +576,7 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
-                agent = self.agents.get(issue.assignee or "default")
+                agent = self.agents.get(self.config.get_agent_for_phase("design"))
                 latest_review = self._get_latest_review(issue.id, review_section_key)
                 request = AgentRequest(action="design", issue=issue,
                     context={
@@ -698,7 +698,7 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
-                agent = self.agents.get(issue.assignee or "default")
+                agent = self.agents.get(self.config.get_agent_for_phase("develop"))
                 latest_review = self._get_latest_review(issue.id, review_section_key)
                 ctx_dict = {
                     "worktree_path": task.worktree_path,
@@ -755,7 +755,7 @@ class Engine:
                     if gate_fail_count >= 2:
                         # Escalate: ask reviewer to analyze gate failure
                         self._log(issue.id, "Gate 连续失败，升级给 reviewer 分析")
-                        reviewer_names = self.config.get_reviewers("develop")
+                        reviewer_names = self.config.get_agent_for_phase("develop_review")
                         if reviewer_names:
                             reviewer = self.agents.get(reviewer_names[0])
                             try:
@@ -870,7 +870,7 @@ class Engine:
 
         # Run preflight if this is the first design attempt (no existing design)
         if "设计" not in issue.sections or not issue.sections["设计"]:
-            agent = self.agents.get(issue.assignee or "default")
+            agent = self.agents.get(self.config.get_agent_for_phase("design"))
             request = AgentRequest(action="preflight", issue=issue,
                 context={"worktree_path": None})
             try:
@@ -895,13 +895,13 @@ class Engine:
 
         # Continue with design cycle
         task = await self.task_manager.create(issue, repo_path=self.repo_path,
-            action="design", agent_name=issue.assignee or "default")
+            action="design", agent_name=self.config.get_agent_for_phase("design"))
         await self._run_design_cycle(issue, task)
 
     async def _on_develop(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
         task = await self.task_manager.create(issue, repo_path=self.repo_path,
-            action="develop", agent_name=issue.assignee or "default")
+            action="develop", agent_name=self.config.get_agent_for_phase("develop"))
         await self._run_develop_cycle(issue, task)
 
     async def _on_run(self, msg):

@@ -860,15 +860,25 @@ def playground(tmp_path):
 def system(playground, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("""\
-agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
+clouds:
+  local:
+    env: {}
 
-reviewers:
-  design: [claude-code]
-  develop: [claude-code]
+models:
+  default-model:
+    cloud: local
+    model: sonnet
+
+agents:
+  claude-code:
+    type: claude_code
+    model: default-model
+
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [claude-code]
+  develop_review: [claude-code]
 
 review_policy:
   pass_threshold: no_high_or_critical
