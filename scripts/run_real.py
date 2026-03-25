@@ -136,6 +136,31 @@ async def main():
     elif command == "cancel":
         await bus.publish(Message(MessageType.CMD_CANCEL, {"issue_id": int(args[0])}))
 
+    elif command == "iterate":
+        issue_id = int(args[0])
+        requirements_parts = []
+        from_file = None
+        i = 1
+        while i < len(args):
+            if args[i] == "--from" and i + 1 < len(args):
+                desc_path = Path(repo_path) / args[i + 1]
+                if not desc_path.exists():
+                    desc_path = Path(args[i + 1])
+                from_file = str(desc_path)
+                i += 2
+            else:
+                requirements_parts.append(args[i])
+                i += 1
+        requirements = ""
+        if from_file and Path(from_file).is_file():
+            requirements = Path(from_file).read_text(encoding="utf-8")
+        elif requirements_parts:
+            requirements = " ".join(requirements_parts)
+        await bus.publish(Message(MessageType.CMD_ITERATE, {
+            "issue_id": issue_id,
+            "requirements": requirements,
+        }))
+
     elif command == "cleanup":
         delete_branch = "--delete-branch" in args
         await bus.publish(Message(MessageType.CMD_CLEANUP, {
@@ -148,7 +173,7 @@ async def main():
         sys.exit(1)
 
     # Print final issue state
-    if command in ("create", "design", "develop", "run", "approve", "resume"):
+    if command in ("create", "design", "develop", "run", "approve", "resume", "iterate"):
         try:
             issues = issue_store.list_all()
             if issues:
