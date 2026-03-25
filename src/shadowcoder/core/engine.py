@@ -148,6 +148,16 @@ class Engine:
         if not passed:
             return False, "build/tests failed", output
 
+        # Check for stray files
+        try:
+            untracked = await self._get_untracked_files(worktree_path)
+            stray = self._detect_stray_files(untracked)
+            if stray:
+                warning = f"\nWARNING: Stray files in worktree root: {', '.join(stray)}\nRemove these or move them to a test directory."
+                output += warning
+        except Exception:
+            pass  # best-effort
+
         # Verify each acceptance test was actually executed and passed
         not_passed = []
         for tc in proposed_tests:
@@ -171,6 +181,21 @@ class Engine:
             return False, f"acceptance tests not passed: {not_passed}", output
 
         return True, "gate passed", output
+
+    async def _get_untracked_files(self, worktree_path: str) -> list[str]:
+        """Get list of untracked files in worktree."""
+        proc = await asyncio.create_subprocess_exec(
+            "git", "ls-files", "--others", "--exclude-standard",
+            cwd=worktree_path,
+            stdout=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        return [f for f in stdout.decode().strip().splitlines() if f]
+
+    def _detect_stray_files(self, untracked: list[str]) -> list[str]:
+        """Flag files in worktree root that look like temp/debug artifacts."""
+        return [f for f in untracked
+                if "/" not in f and f.endswith((".py", ".js", ".ts", ".rs", ".go"))]
 
     async def _run_individual_test(self, worktree_path: str, test_name: str) -> bool:
         """Run a single test with language-specific force-include flags."""
@@ -259,6 +284,51 @@ class Engine:
             tests = list(fb.get("proposed_tests", []))
         return tests
 
+    @staticmethod
+    def _fetch_url_content(url: str) -> str:
+        """Fetch text content from a URL.
+
+        GitHub issue URLs are converted to API calls to get structured content.
+        """
+        import json
+        import re
+        import urllib.request
+
+        # GitHub issue URL → API call for structured content
+        gh_match = re.match(
+            r"https?://github\.com/([^/]+)/([^/]+)/issues/(\d+)", url
+        )
+        if gh_match:
+            owner, repo, number = gh_match.groups()
+            api_url = f"https://api.github.com/repos/{owner}/{repo}/issues/{number}"
+            headers = {"Accept": "application/vnd.github.v3+json",
+                        "User-Agent": "shadowcoder"}
+            # Use gh CLI token if available for higher rate limits
+            try:
+                import subprocess
+                token = subprocess.check_output(
+                    ["gh", "auth", "token"], stderr=subprocess.DEVNULL
+                ).decode().strip()
+                if token:
+                    headers["Authorization"] = f"token {token}"
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                pass
+            req = urllib.request.Request(api_url, headers=headers)
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            parts = [f"# {data['title']}", ""]
+            if data.get("labels"):
+                labels = ", ".join(l["name"] for l in data["labels"])
+                parts.append(f"Labels: {labels}")
+                parts.append("")
+            if data.get("body"):
+                parts.append(data["body"])
+            return "\n".join(parts)
+
+        # Generic URL
+        with urllib.request.urlopen(url, timeout=30) as resp:
+            return resp.read().decode("utf-8")
+
     def _log(self, issue_id: int, entry: str):
         """Append to 航海日志."""
         try:
@@ -273,6 +343,8 @@ class Engine:
         description = msg.payload.get("description")
         if description and Path(description).is_file():
             description = Path(description).read_text(encoding="utf-8")
+        elif description and description.startswith(("http://", "https://")):
+            description = self._fetch_url_content(description)
         issue = self.issue_store.create(title, priority=priority, tags=tags,
                                         description=description)
         self._log(issue.id, f"Issue 创建: {title}")
@@ -825,6 +897,17 @@ class Engine:
             issue_id = issues[-1].id
 
         issue = self.issue_store.get(issue_id)
+
+        # Recover interrupted issue: infer which phase to resume
+        if issue.status == IssueStatus.IN_PROGRESS:
+            stage = self._infer_blocked_stage(issue)
+            if stage == "develop":
+                self._log(issue_id, "run 恢复: IN_PROGRESS → 继续 develop")
+                issue.status = IssueStatus.APPROVED
+            else:
+                self._log(issue_id, "run 恢复: IN_PROGRESS → 重跑 design")
+                issue.status = IssueStatus.CREATED
+            self.issue_store.save(issue)
 
         # Design phase
         if issue.status in (IssueStatus.CREATED, IssueStatus.FAILED, IssueStatus.BLOCKED):

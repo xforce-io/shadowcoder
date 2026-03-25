@@ -1549,3 +1549,67 @@ class TestSessionResume:
         # Neither should have resume_id
         assert agent.develop_calls[0].context.get("resume_id") is None
         assert agent.develop_calls[1].context.get("resume_id") is None
+
+
+# ===========================================================================
+# TestGateStrayFiles
+# ===========================================================================
+
+
+@pytest.fixture
+def integ_env(integ_repo, integ_config, agent):
+    """Assemble system without mocking _gate_check, for gate-internals tests."""
+    AgentRegistry.register("claude_code", lambda cfg: agent)
+
+    bus = MessageBus()
+    wt_manager = WorktreeManager(integ_config.get_worktree_dir())
+    task_manager = TaskManager(wt_manager)
+    store = IssueStore(str(integ_repo), integ_config)
+    registry = AgentRegistry(integ_config)
+    registry._instances["claude-code"] = agent
+
+    engine = Engine(bus, store, task_manager, registry, integ_config, str(integ_repo))
+    engine._get_code_diff = AsyncMock(return_value="diff --git a/foo.py")
+
+    return {
+        "bus": bus,
+        "engine": engine,
+        "store": store,
+        "task_manager": task_manager,
+        "agent": agent,
+        "repo": integ_repo,
+        "config": integ_config,
+        "default_develop": agent._default_develop,
+    }
+
+
+class TestGateStrayFiles:
+    async def test_gate_warns_on_stray_root_files(self, integ_env):
+        """Gate output includes warning when stray .py files exist in worktree root."""
+        env = integ_env
+        agent = env["agent"]
+        agent.configure_develop(lambda req: env["default_develop"](req))
+
+        # Create issue and get to develop
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Test stray files"}))
+        issue = env["store"].list_all()[-1]
+        env["store"].transition_status(issue.id, IssueStatus.DESIGNING)
+        env["store"].transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
+        env["store"].transition_status(issue.id, IssueStatus.APPROVED)
+        env["store"].update_section(issue.id, "设计", "Test design")
+
+        # Create stray file in worktree before develop
+        task = await env["task_manager"].create(issue, repo_path=str(env["repo"]),
+            action="develop", agent_name="claude-code")
+        if task.worktree_path:
+            (Path(task.worktree_path) / "test_debug.py").write_text("# temp")
+            (Path(task.worktree_path) / "pyproject.toml").write_text("[project]\nname='test'\n")
+
+        # Mock _run_command to simulate passing tests
+        env["engine"]._run_command = AsyncMock(return_value=(True, "all passed"))
+
+        # Run gate check
+        ok, msg, output = await env["engine"]._gate_check(
+            issue.id, task.worktree_path, [])
+        assert "WARNING" in output or "Stray" in output
