@@ -1721,3 +1721,74 @@ class TestInProgressRecovery:
         await env["bus"].publish(Message(MessageType.CMD_RUN, {"issue_id": issue.id}))
         issue = store.get(issue.id)
         assert issue.status == IssueStatus.DONE
+
+
+# ===========================================================================
+# 14. Last issue pointer
+# ===========================================================================
+
+
+class TestLastIssue:
+    """last_issue pointer: save/get, resume_last, and CANCELLED/DONE rerun."""
+
+    async def test_run_saves_last_issue(self, system):
+        """run saves last_issue pointer."""
+        env = system
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"title": "Test last"}))
+        last = env["store"].get_last()
+        assert last is not None
+        issue = env["store"].list_all()[-1]
+        assert last == issue.id
+
+    async def test_run_resume_last(self, system):
+        """run with resume_last continues the last issue."""
+        env = system
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"title": "Test resume"}))
+        issue = env["store"].list_all()[-1]
+        assert issue.status == IssueStatus.DONE
+
+        # Resume last (DONE → APPROVED → develop → DONE)
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"resume_last": True}))
+        issue = env["store"].get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+    async def test_run_resume_last_no_previous(self, system):
+        """run resume_last with no previous issue emits error."""
+        env = system
+        errors = []
+        async def capture_error(msg):
+            errors.append(msg.payload)
+        env["bus"].subscribe(MessageType.EVT_ERROR, capture_error)
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"resume_last": True}))
+        assert len(errors) == 1
+
+    async def test_run_cancelled_restarts_design(self, system):
+        """run on CANCELLED issue restarts from design."""
+        env = system
+        store = env["store"]
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Cancel test"}))
+        issue = store.list_all()[-1]
+        store.transition_status(issue.id, IssueStatus.CANCELLED)
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"issue_id": issue.id}))
+        issue = store.get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+    async def test_run_done_reruns_develop(self, system):
+        """run on DONE issue re-enters develop."""
+        env = system
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"title": "Done test"}))
+        issue = env["store"].list_all()[-1]
+        assert issue.status == IssueStatus.DONE
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"issue_id": issue.id}))
+        issue = env["store"].get(issue.id)
+        assert issue.status == IssueStatus.DONE

@@ -37,7 +37,7 @@ VALID_TRANSITIONS: dict[IssueStatus, set[IssueStatus]] = {
     IssueStatus.FAILED: {IssueStatus.DESIGNING, IssueStatus.DEVELOPING, IssueStatus.DONE, IssueStatus.BLOCKED, IssueStatus.CANCELLED},
     IssueStatus.IN_PROGRESS: {IssueStatus.CREATED, IssueStatus.APPROVED, IssueStatus.DESIGNING, IssueStatus.DEVELOPING, IssueStatus.FAILED, IssueStatus.CANCELLED},
     IssueStatus.BLOCKED: {IssueStatus.DESIGNING, IssueStatus.DEVELOPING, IssueStatus.APPROVED, IssueStatus.DONE, IssueStatus.CANCELLED},
-    IssueStatus.CANCELLED: set(),
+    IssueStatus.CANCELLED: {IssueStatus.CREATED},
 }
 
 

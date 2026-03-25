@@ -167,6 +167,22 @@ class IssueStore:
         """Persist an issue directly, bypassing transition validation."""
         self._save(issue)
 
+    def save_last(self, issue_id: int) -> None:
+        """Save the last active issue ID."""
+        last_file = self.base.parent / "last_issue"
+        last_file.parent.mkdir(parents=True, exist_ok=True)
+        last_file.write_text(str(issue_id))
+
+    def get_last(self) -> int | None:
+        """Get the last active issue ID, or None."""
+        last_file = self.base.parent / "last_issue"
+        if last_file.exists():
+            try:
+                return int(last_file.read_text().strip())
+            except ValueError:
+                return None
+        return None
+
     def _save(self, issue: Issue) -> None:
         self.base.mkdir(parents=True, exist_ok=True)
         post = frontmatter.Post(

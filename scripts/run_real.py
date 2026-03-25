@@ -106,6 +106,8 @@ async def main():
     elif command == "run":
         if args and args[0].isdigit():
             payload = {"issue_id": int(args[0])}
+        elif not args:
+            payload = {"resume_last": True}
         else:
             title_parts = []
             description = None
@@ -188,7 +190,13 @@ async def main():
         try:
             issues = issue_store.list_all()
             if issues:
-                latest = issues[-1] if command == "create" else issue_store.get(int(args[0]))
+                if command == "create":
+                    latest = issues[-1]
+                elif command == "run" and (not args or not args[0].isdigit()):
+                    last_id = issue_store.get_last()
+                    latest = issue_store.get(last_id) if last_id else issues[-1]
+                else:
+                    latest = issue_store.get(int(args[0]))
                 print(f"\n=== Issue #{latest.id}: {latest.title} ===")
                 print(f"Status: {latest.status.value}")
                 print(f"Sections: {list(latest.sections.keys())}")

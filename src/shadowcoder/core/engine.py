@@ -915,11 +915,21 @@ class Engine:
         """Run the full lifecycle: create (optional) → design → develop → done."""
         issue_id = msg.payload.get("issue_id")
 
+        # resume_last: look up last saved issue
+        if msg.payload.get("resume_last"):
+            issue_id = self.issue_store.get_last()
+            if issue_id is None:
+                await self.bus.publish(Message(MessageType.EVT_ERROR,
+                    {"message": "No previous issue to resume. Use 'run <title>' to create one."}))
+                return
+
         # If title given, create issue first
         if "title" in msg.payload:
             await self._on_create(msg)
             issues = self.issue_store.list_all()
             issue_id = issues[-1].id
+
+        self.issue_store.save_last(issue_id)
 
         issue = self.issue_store.get(issue_id)
 
@@ -932,6 +942,14 @@ class Engine:
             else:
                 self._log(issue_id, f"run 恢复: {issue.status.value} → 重跑 design")
                 issue.status = IssueStatus.CREATED
+            self.issue_store.save(issue)
+        elif issue.status == IssueStatus.CANCELLED:
+            self._log(issue_id, "run 恢复: cancelled → 重跑 design")
+            issue.status = IssueStatus.CREATED
+            self.issue_store.save(issue)
+        elif issue.status == IssueStatus.DONE:
+            self._log(issue_id, "run 恢复: done → 重跑 develop")
+            issue.status = IssueStatus.APPROVED
             self.issue_store.save(issue)
 
         # Design phase
