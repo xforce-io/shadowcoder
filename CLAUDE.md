@@ -84,18 +84,39 @@ Key files:
 
 ## Multi-Model Support
 
-Any model reachable via `claude --model` works. Third-party models use the `env` field:
+Config is structured in four sections: `clouds` (API endpoints/keys), `models` (model aliases), `agents` (agent definitions), and `dispatch` (which agent runs each role).
 
 ```yaml
 # ~/.shadowcoder/config.yaml
+clouds:
+  anthropic:
+    env: {}
+  volcengine:
+    env:
+      ANTHROPIC_BASE_URL: https://ark.cn-beijing.volces.com/api/coding
+      ANTHROPIC_AUTH_TOKEN: <key>
+
+models:
+  sonnet:
+    cloud: anthropic
+    model: sonnet
+  deepseek-v3:
+    cloud: volcengine
+    model: deepseek-v3-2-251201
+
 agents:
-  available:
-    volcengine:
-      type: claude_code
-      model: deepseek-v3-2-251201
-      env:
-        ANTHROPIC_BASE_URL: https://ark.cn-beijing.volces.com/api/coding
-        ANTHROPIC_AUTH_TOKEN: <key>
+  claude-coder:
+    type: claude_code
+    model: sonnet
+  fast-coder:
+    type: claude_code
+    model: deepseek-v3
+
+dispatch:
+  design: fast-coder
+  develop: fast-coder
+  design_review: [claude-coder]
+  develop_review: [claude-coder]
 ```
 
 Mix agents freely: one for develop, another for review.
