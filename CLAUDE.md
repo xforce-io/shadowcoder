@@ -11,7 +11,7 @@ pip install -e ".[dev]"
 # Run tests
 python -m pytest tests/ -v
 
-# Config
+# Config (optional — works without it if Claude Code CLI is installed)
 ~/.shadowcoder/config.yaml
 ```
 

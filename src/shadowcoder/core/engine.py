@@ -340,7 +340,7 @@ class Engine:
             logger.debug("Failed to write log for issue %d", issue_id)
 
     async def _on_create(self, msg):
-        title = msg.payload["title"]
+        title = msg.payload.get("title", "")
         priority = msg.payload.get("priority", "medium")
         tags = msg.payload.get("tags")
         description = msg.payload.get("description")
@@ -348,6 +348,11 @@ class Engine:
             description = Path(description).read_text(encoding="utf-8")
         elif description and description.startswith(("http://", "https://")):
             description = self._fetch_url_content(description)
+        # Extract title from fetched content if not provided
+        if not title and description and description.startswith("# "):
+            title = description.split("\n", 1)[0].removeprefix("# ").strip()
+        if not title:
+            title = "Untitled"
         issue = self.issue_store.create(title, priority=priority, tags=tags,
                                         description=description)
         self._log(issue.id, f"Issue 创建: {title}")

@@ -204,6 +204,39 @@ async def test_create_issue(bus, store, task_mgr, registry_with, config):
     assert issue.title == "New feature"
 
 
+async def test_create_from_github_url_extracts_title(bus, store, task_mgr, registry_with, config, monkeypatch):
+    """When --from is a GitHub issue URL and no title given, extract title from content."""
+    def fake_fetch(url):
+        return "# Add user authentication\n\nImplement OAuth2 login flow."
+    monkeypatch.setattr(Engine, "_fetch_url_content", staticmethod(fake_fetch))
+
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    events = []
+    bus.subscribe(MessageType.EVT_ISSUE_CREATED, lambda m: events.append(m))
+
+    await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, {
+        "title": "",
+        "description": "https://github.com/owner/repo/issues/42",
+    }))
+    assert len(events) == 1
+    issue = store.get(events[0].payload["issue_id"])
+    assert issue.title == "Add user authentication"
+
+
+async def test_create_no_title_no_url_gets_untitled(bus, store, task_mgr, registry_with, config):
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    events = []
+    bus.subscribe(MessageType.EVT_ISSUE_CREATED, lambda m: events.append(m))
+
+    await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, {
+        "title": "",
+        "description": "Just some plain text requirements.",
+    }))
+    assert len(events) == 1
+    issue = store.get(events[0].payload["issue_id"])
+    assert issue.title == "Untitled"
+
+
 async def test_resume_blocked_design(bus, store, task_mgr, config):
     call_count = 0
     agent = AsyncMock()

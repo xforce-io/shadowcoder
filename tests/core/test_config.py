@@ -148,9 +148,28 @@ def test_log_level(new_config):
     assert new_config.get_log_level() == "INFO"
 
 
-def test_missing_config_file():
-    with pytest.raises(FileNotFoundError):
-        Config("/nonexistent/config.yaml")
+def test_missing_config_uses_defaults():
+    """No config file → built-in defaults, no error."""
+    config = Config("/nonexistent/config.yaml")
+    assert config.get_agent_for_phase("design") == "default"
+    assert config.get_agent_for_phase("design_review") == ["default"]
+    ac = config.get_agent_config("default")
+    assert ac["type"] == "claude_code"
+    assert ac["model"] == "sonnet"
+    assert "env" not in ac or ac.get("env") is None
+
+
+def test_missing_config_getter_defaults():
+    """All getters return sensible defaults with no config file."""
+    config = Config("/nonexistent/config.yaml")
+    assert config.get_max_review_rounds() == 3
+    assert config.get_max_test_retries() == 3
+    assert config.get_max_budget_usd() is None
+    assert config.get_issue_dir() == ".shadowcoder/issues"
+    assert config.get_worktree_dir() == ".shadowcoder/worktrees"
+    assert config.get_pass_threshold() == "no_critical"
+    assert config.get_gate_mode() == "standard"
+    assert config.get_test_command() is None
 
 
 def test_max_budget_not_set(new_config):

@@ -2,11 +2,7 @@
 
 # ShadowCoder
 
-A neural-symbolic self-evolving development system. AI agents generate code (neural), while structured review scoring, state machines, and deterministic test verification (symbolic) drive iterative improvement — until the output converges to meet requirements.
-
-## Core Idea
-
-Traditional software development relies on humans to iterate between writing code and verifying it. ShadowCoder automates this loop:
+Point it at a repo. Give it a task. It codes until it works.
 
 ```
          generate              verify              feedback
@@ -15,21 +11,21 @@ Traditional software development relies on humans to iterate between writing cod
     └────────────── iterate until converged ──────────────┘
 ```
 
-This is structurally identical to a neural-symbolic training loop:
+## Quick Start
 
-| Training Concept | ShadowCoder Equivalent |
-|------------------|----------------------|
-| Forward pass | Agent generates design/code |
-| Loss function | Review severity counts (CRITICAL/HIGH) + test exit code |
-| Backpropagation | Review feedback injected into next context |
-| Gradient clipping | Per-round feature capacity limit |
-| Early stopping | Max rounds reached, escalate to human |
-| Curriculum | Staged: preflight → design → develop → test |
-| Ground truth oracle | Independent test verification (`cargo test`, `go test`) |
+```bash
+pip install -e ".[dev]"
 
-The key difference from model training: ShadowCoder optimizes the **output artifact** (code), not the model weights. It is a test-time compute system — improving quality through inference-time iteration rather than training.
+# Run — no config needed if you have Claude Code CLI installed
+python scripts/run_real.py /path/to/repo run "Add user authentication" --from requirements.md
 
-## The Loop
+# Or point it at a GitHub issue
+python scripts/run_real.py /path/to/repo run --from https://github.com/owner/repo/issues/42
+```
+
+That's it. ShadowCoder creates a design, writes the code in an isolated worktree, runs tests, reviews the output, and iterates until everything passes.
+
+## What It Does
 
 ```
 create → preflight → design ⇄ review → develop ⇄ gate ⇄ review → done
@@ -38,132 +34,109 @@ create → preflight → design ⇄ review → develop ⇄ gate ⇄ review → d
                                          fail: retry develop
 ```
 
-Each stage:
+- **Preflight**: Quick feasibility check. Low feasibility blocks early.
+- **Design**: Agent produces architecture doc. Reviewer evaluates it.
+- **Develop**: Agent writes code in an isolated git worktree.
+- **Gate**: Engine independently runs tests (`cargo test`, `pytest`, `go test`) and verifies acceptance tests passed. Gate failure routes back to develop.
+- **Review**: Reviewer evaluates code diff. Pass → done.
 
-- **Preflight**: Quick feasibility assessment. Low feasibility blocks before wasting compute.
-- **Design**: Agent produces architecture document. Reviewer evaluates it.
-  - No CRITICAL or HIGH: pass. 1-2 HIGH: conditional pass. Any CRITICAL or 3+ HIGH: retry with feedback.
-- **Develop**: Agent writes actual code in an isolated git worktree.
-- **Gate**: Engine independently runs the test command (`cargo test`, `pytest`, etc.) and verifies acceptance tests executed and passed. Gate failure routes back to develop — never to design.
-  - After 2 consecutive gate failures, reviewer is called to analyze the failure and provide targeted feedback.
-- **Review**: Reviewer evaluates code diff after gate passes. Pass or conditional pass → done.
-
-The review severity counts are the loss signal. They decrease over rounds — a literal training curve:
+Review severity counts are the loss signal — they decrease over rounds:
 
 ```
 Gomoku Design: R1=CRITICAL:2,HIGH:4 → R2=CRITICAL:1,HIGH:1 → R3=CRITICAL:0,HIGH:0 (converged)
 ```
 
-## Symbolic Constraints
-
-The "symbolic" half is what makes the system reliable:
-
-- **State machine**: Issue lifecycle with validated transitions. No skipping stages.
-- **Review severity thresholds**: Deterministic pass/fail/conditional decisions based on CRITICAL/HIGH/MEDIUM/LOW comment counts.
-- **Independent test verification**: Engine runs `cargo test` / `go test` / `pytest` itself. If the exit code is non-zero, the agent's PASS is overridden to FAIL. This is the non-negotiable ground truth oracle.
-- **Budget limits**: Accumulated token cost checked after each agent call. Exceeding the limit halts the loop.
-- **Retry bounds**: Max review rounds and max test retries prevent infinite loops.
-
-These constraints cannot be circumvented by the neural component. They are the rules of the game.
-
 ## Validated Results
 
 ### SQL Database Engine
 
-Built a SQL database engine (parser, query planner, executor, storage, B-tree indexes, MVCC transactions, error handling) from a requirements document:
+Built from a requirements document (parser, query planner, executor, storage, B-tree indexes, MVCC transactions):
 
-| Language | Design | Develop | Test | Code | Functional | Performance |
-|----------|--------|---------|------|------|-----------|-------------|
-| Go | 3 rounds | 3 rounds | 1 round | 17K lines | Passed | Passed |
-| Rust | 6 rounds | 4 rounds | 3 rounds | 10K lines | 37/37 | 7/7 (fixed via auto-route) |
-| Haskell | 9 rounds (blocked) | - | - | - | - | - |
+| Language | Design | Develop | Tests | Code |
+|----------|--------|---------|-------|------|
+| Go | 3 rounds | 3 rounds | 1 round | 17K lines |
+| Rust | 6 rounds | 4 rounds | 3 rounds | 10K lines |
+| Haskell | 9 rounds (blocked) | - | - | - |
 
-The Rust version demonstrates the full self-evolving loop: agent reported tests passing, but independent verification caught 2 failing performance benchmarks. The system automatically routed back to develop, the agent optimized the code, and all 44 tests passed on the next round.
-
-The Haskell version demonstrates graceful failure: the system identified (via reviewer feedback) that Haskell's STM/IO interaction model made the concurrent transaction design fundamentally problematic, and escalated to human rather than spinning endlessly.
+The Rust version demonstrates the full loop: agent reported tests passing, but independent verification caught 2 failing benchmarks. The system routed back to develop, the agent optimized the code, and all 44 tests passed.
 
 ### Gomoku AI (Rust, Claude Sonnet)
 
-Gomoku AI engine with minimax + alpha-beta pruning, pattern recognition, and web interface:
-
 | Phase | Rounds | Notes |
 |-------|--------|-------|
-| Design | 3 | R1: 2 CRITICAL (mutex lock during search, no IDDFS). R3: passed |
-| Develop | 4 | R1-R3: gate failures (abort flag, tactics tests). R4: all tests pass |
+| Design | 3 | R1: 2 CRITICAL. R3: passed |
+| Develop | 4 | R1-R3: gate failures. R4: all tests pass |
 
-AI (depth=4) vs baseline: >90% win rate over 100 games. Full acceptance criteria met.
+AI (depth=4) vs baseline: >90% win rate over 100 games.
 
 ### Multi-Model: LRU Cache (Python, DeepSeek-v3 via Volcengine)
-
-Thread-safe LRU cache with TTL support, validating third-party model integration:
 
 | Phase | Rounds | Notes |
 |-------|--------|-------|
 | Design | 2 | R1: 1 CRITICAL, 3 HIGH. R2: conditional pass |
-| Develop | 1 | Gate pass on first attempt. 26 tests (correctness + concurrency + performance) |
+| Develop | 1 | Gate pass on first attempt. 26 tests |
 
-Demonstrates that any model reachable via an Anthropic-compatible API can drive the full loop.
-
-## Installation
-
-```bash
-git clone https://github.com/xforce-io/shadowcoder.git
-cd shadowcoder
-pip install -e ".[dev]"
-```
-
-Requires [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated.
+Any model reachable via an Anthropic-compatible API can drive the full loop.
 
 ## Configuration
 
-`~/.shadowcoder/config.yaml`:
+**Zero config**: If you have [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated, ShadowCoder works out of the box — no config file needed. It uses your local Claude Code with the default model.
+
+**Advanced**: Create `~/.shadowcoder/config.yaml` to customize models, use third-party APIs, or mix agents:
 
 ```yaml
-agents:
-  default: claude-code
-  available:
-    claude-code:
-      type: claude_code
-      model: sonnet
-      permission_mode: auto
-    volcengine:                # third-party model via compatible API
-      type: claude_code
-      model: deepseek-v3-2-251201
-      permission_mode: auto
-      env:                     # custom env vars passed to claude CLI subprocess
-        ANTHROPIC_BASE_URL: https://ark.cn-beijing.volces.com/api/coding
-        ANTHROPIC_AUTH_TOKEN: <your-key>
+clouds:
+  anthropic:
+    env: {}
+  volcengine:
+    env:
+      ANTHROPIC_BASE_URL: https://ark.cn-beijing.volces.com/api/coding
+      ANTHROPIC_AUTH_TOKEN: <key>
 
-reviewers:
-  design: [claude-code]
-  develop: [claude-code]       # can mix agents, e.g. [volcengine]
+models:
+  sonnet:
+    cloud: anthropic
+    model: sonnet
+  deepseek-v3:
+    cloud: volcengine
+    model: deepseek-v3-2-251201
+
+agents:
+  claude-coder:
+    type: claude_code
+    model: sonnet
+  fast-coder:
+    type: claude_code
+    model: deepseek-v3
+
+dispatch:
+  design: fast-coder
+  develop: fast-coder
+  design_review: [claude-coder]
+  develop_review: [claude-coder]
 
 review_policy:
   pass_threshold: no_high_or_critical
   max_review_rounds: 5
   max_test_retries: 3
   # max_budget_usd: 10.0
-
-build:
-  test_command: "cargo test"  # or "go test ./..." or "pytest"
-
-issue_store:
-  dir: .shadowcoder/issues
-
-worktree:
-  base_dir: .shadowcoder/worktrees
 ```
 
-Any model reachable via Claude CLI's `--model` flag works — including third-party models served behind an Anthropic-compatible API. Set `env` to override `ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN` per agent.
+Mix agents freely: one for develop, another for review.
 
 ## Usage
 
 ```bash
-# Create issue with requirements
-python scripts/run_real.py /path/to/repo create "Feature" --from requirements.md
+# Full loop — from title + requirements file
+python scripts/run_real.py /path/to/repo run "Feature Name" --from requirements.md
 
-# Run full loop (or individual stages)
-python scripts/run_real.py /path/to/repo run "Feature" --from requirements.md
+# Full loop — from GitHub issue (title auto-extracted)
+python scripts/run_real.py /path/to/repo run --from https://github.com/owner/repo/issues/42
+
+# Resume last issue
+python scripts/run_real.py /path/to/repo run
+
+# Run individual stages
 python scripts/run_real.py /path/to/repo design 1
 python scripts/run_real.py /path/to/repo develop 1
 
@@ -171,31 +144,61 @@ python scripts/run_real.py /path/to/repo develop 1
 python scripts/run_real.py /path/to/repo approve 1    # approve blocked issue
 python scripts/run_real.py /path/to/repo resume 1     # retry from blocked
 python scripts/run_real.py /path/to/repo cancel 1
-python scripts/run_real.py /path/to/repo cleanup 1    # remove worktree
 
 # Query
 python scripts/run_real.py /path/to/repo list
 python scripts/run_real.py /path/to/repo info 1
+
+# Cleanup
+python scripts/run_real.py /path/to/repo cleanup 1
+python scripts/run_real.py /path/to/repo cleanup 1 --delete-branch
 ```
 
-Or via TUI: `shadowcoder`
+## How It Works
 
-## Audit Trail
+ShadowCoder automates the human development loop: write code → verify → fix → repeat. This is structurally identical to a neural-symbolic training loop:
 
-Every issue maintains a complete record:
+| Training Concept | ShadowCoder Equivalent |
+|------------------|----------------------|
+| Forward pass | Agent generates design/code |
+| Loss function | Review severity counts (CRITICAL/HIGH) + test exit code |
+| Backpropagation | Review feedback injected into next context |
+| Gradient clipping | Per-round feature capacity limit |
+| Early stopping | Max rounds reached, escalate to human |
+| Ground truth oracle | Independent test verification |
+
+The key difference: ShadowCoder optimizes the **output artifact** (code), not the model weights. It is a test-time compute system.
+
+### Symbolic Constraints
+
+The "symbolic" half ensures reliability:
+
+- **State machine**: Issue lifecycle with validated transitions. No skipping stages.
+- **Review thresholds**: Deterministic pass/fail based on CRITICAL/HIGH/MEDIUM/LOW counts.
+- **Independent test verification**: Engine runs tests itself. Non-zero exit code overrides agent's PASS to FAIL.
+- **Budget limits**: Token cost checked after each agent call.
+- **Retry bounds**: Max review rounds and test retries prevent infinite loops.
+
+### Architecture
 
 ```
-.shadowcoder/issues/
-  0001.md          # Current state (requirements, latest design, implementation, test results)
-  0001.log.md      # Chronological timeline — every action timestamped
-  0001.versions/   # Archived outputs — design_r1.md, design_r2.md, develop_r1.md, ...
+src/shadowcoder/
+  core/
+    engine.py          # The loop: state machine + review scoring + test verification
+    bus.py             # Async message bus
+    issue_store.py     # Issue files, logs, version archives
+    models.py          # States, transitions
+    config.py          # Typed config with zero-config defaults
+    task_manager.py    # Runtime tasks
+    worktree.py        # Git worktree lifecycle
+  agents/
+    types.py           # Structured output types
+    base.py            # Abstract interface + helpers
+    claude_code.py     # Claude Code CLI implementation
+    registry.py        # Agent discovery
 ```
 
-The log is append-only. Design/code sections show the latest version; previous versions are in `.versions/`. Review history is in the log. Nothing is lost.
-
-## Agent Abstraction
-
-Agents implement four methods with structured return types:
+### Agent Abstraction
 
 ```python
 class BaseAgent(ABC):
@@ -205,45 +208,31 @@ class BaseAgent(ABC):
     async def review(self, request) -> ReviewOutput
 ```
 
-Testing is handled by the Engine's gate (not the agent) — it runs the test command independently and checks the exit code.
+Testing is handled by the Engine's gate — not the agent. Adding a new agent means implementing these four methods.
 
-Each agent handles its own output format constraints internally. The Engine never parses raw LLM output — it only consumes typed fields. Adding a new agent (Codex, LangChain, local models) means implementing these methods.
-
-## Architecture
+### Audit Trail
 
 ```
-src/shadowcoder/
-  core/
-    engine.py          # The loop: state machine + review scoring + test verification
-    bus.py             # Async message bus
-    issue_store.py     # Issue files, logs, version archives
-    models.py          # States, transitions
-    config.py          # Typed config
-    task_manager.py    # Runtime tasks
-    worktree.py        # Git worktree lifecycle
-  agents/
-    types.py           # Structured output types
-    base.py            # Abstract interface + helpers
-    claude_code.py     # Claude Code CLI implementation
-    registry.py        # Agent discovery
-  cli/tui/app.py       # Textual TUI
+.shadowcoder/issues/
+  0001.md          # Current state (requirements, design, implementation, test results)
+  0001.log.md      # Chronological timeline — every action timestamped
+  0001.versions/   # Archived outputs — design_r1.md, design_r2.md, develop_r1.md, ...
 ```
 
-143 tests. 18 source files. ~1,800 lines of Python.
+The log is append-only. Nothing is lost.
 
 ## Known Limitations
 
-- **Cost tracking incomplete**: `AgentUsage` fields are defined but the Claude CLI JSON response parsing does not reliably extract token counts and costs. Usage summary shows `$0.0000`.
-- **Go validation caveat**: The Go SQL engine was validated before independent test verification existed. Its results are based on manual `go test` runs, not the automated verification loop.
-- **No graceful stop**: Killing a running agent requires `pkill`. A `stop` command is not yet implemented.
-- **No checkpoint/resume**: If a long develop session is interrupted, there is no automatic recovery from partial progress.
-- **Single repo per process**: Cannot run multiple issues in parallel against the same repo. Use separate repos or processes for concurrent work.
+- **Cost tracking incomplete**: Token counts and costs not reliably extracted from Claude CLI responses.
+- **No graceful stop**: Killing a running agent requires `pkill`.
+- **No checkpoint/resume**: Interrupted develop sessions don't auto-recover from partial progress.
+- **Single repo per process**: Use separate processes for concurrent work on the same repo.
 
 ## Roadmap
 
-- **Context compression**: Replace head+tail truncation with fast-model (Haiku) structured summaries for gate output and inter-agent context. Head+tail as fallback.
-- **Prompt audit**: Auto-evaluate context efficiency after each run — which fields were used by the agent, which were ignored, where context was insufficient.
-- **Parallel issues**: Support concurrent issue execution against the same repo with proper locking.
+- **Context compression**: Structured summaries (via fast model) to replace head+tail truncation.
+- **Prompt audit**: Auto-evaluate context efficiency after each run.
+- **Parallel issues**: Concurrent issue execution with proper locking.
 
 ## License
 

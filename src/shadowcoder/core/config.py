@@ -9,10 +9,29 @@ class Config:
     def __init__(self, path: str = "~/.shadowcoder/config.yaml"):
         resolved = Path(path).expanduser()
         if not resolved.exists():
-            raise FileNotFoundError(f"Config file not found: {resolved}")
-        with open(resolved) as f:
-            self._data: dict = yaml.safe_load(f) or {}
-        self._validate()
+            self._data: dict = self._default_data()
+        else:
+            with open(resolved) as f:
+                self._data = yaml.safe_load(f) or {}
+            self._validate()
+
+    @staticmethod
+    def _default_data() -> dict:
+        return {
+            "clouds": {},
+            "models": {
+                "sonnet": {"model": "sonnet"},
+            },
+            "agents": {
+                "default": {"type": "claude_code", "model": "sonnet"},
+            },
+            "dispatch": {
+                "design": "default",
+                "develop": "default",
+                "design_review": ["default"],
+                "develop_review": ["default"],
+            },
+        }
 
     def _validate(self):
         """Validate cross-references between clouds, models, agents, dispatch."""
