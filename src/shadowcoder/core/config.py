@@ -49,3 +49,7 @@ class Config:
     def get_test_command(self) -> str | None:
         """Get the test command to verify results independently of agent."""
         return self._data.get("build", {}).get("test_command")
+
+    def get_gate_mode(self) -> str:
+        """Get gate mode: 'strict' checks all tests, 'standard' checks acceptance only."""
+        return self._data.get("gate", {}).get("mode", "standard")

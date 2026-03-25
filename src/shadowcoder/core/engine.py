@@ -247,6 +247,17 @@ class Engine:
             return False
         return self._total_cost(issue_id) > max_budget
 
+    def _get_gate_tests(self, issue_id: int) -> list:
+        """Get tests for gate check based on gate mode."""
+        fb = self.issue_store.load_feedback(issue_id)
+        tests = list(fb.get("acceptance_tests", []))
+        if self.config.get_gate_mode() == "strict":
+            tests.extend(fb.get("supplementary_tests", []))
+        # Fallback: if no categorized tests yet, use legacy proposed_tests
+        if not tests:
+            tests = list(fb.get("proposed_tests", []))
+        return tests
+
     def _log(self, issue_id: int, entry: str):
         """Append to 航海日志."""
         try:
@@ -563,8 +574,7 @@ class Engine:
         section_key = "开发步骤"
         review_section_key = "Dev Review"
 
-        fb = self.issue_store.load_feedback(issue.id)
-        proposed_tests = fb.get("proposed_tests", [])
+        proposed_tests = self._get_gate_tests(issue.id)
 
         try:
             gate_fail_count = 0
@@ -677,8 +687,7 @@ class Engine:
                     issue, task, "develop", review_section_key, code_diff=code_diff)
                 if last_review:
                     self._update_feedback(issue.id, last_review, round_num, is_design_review=False)
-                    fb = self.issue_store.load_feedback(issue.id)
-                    proposed_tests = fb.get("proposed_tests", [])
+                    proposed_tests = self._get_gate_tests(issue.id)
 
                 decision = self._review_decision(last_review) if last_review else "retry"
 

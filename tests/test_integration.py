@@ -1375,3 +1375,77 @@ class TestAcceptanceContract:
         fb = store.load_feedback(1)
         assert len(fb.get("supplementary_tests", [])) == 1
         assert fb["supplementary_tests"][0]["name"] == "test_edge_case"
+
+    async def test_standard_gate_only_checks_acceptance(self, system):
+        """In standard mode, gate only checks acceptance_tests."""
+        bus, store, agent, engine = (
+            system["bus"], system["store"], system["agent"], system["engine"])
+
+        store.create("Gate standard")
+        store.transition_status(1, IssueStatus.DESIGNING)
+        store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+        store.transition_status(1, IssueStatus.APPROVED)
+
+        fb = store.load_feedback(1)
+        fb["acceptance_tests"] = [{"name": "test_accept", "description": "a",
+                                    "expected_behavior": "b", "category": "acceptance",
+                                    "round_proposed": 1}]
+        fb["supplementary_tests"] = [{"name": "test_suppl", "description": "c",
+                                       "expected_behavior": "d", "category": "acceptance",
+                                       "round_proposed": 1}]
+        store.save_feedback(1, fb)
+
+        gate_tests = engine._get_gate_tests(1)
+        assert any(t["name"] == "test_accept" for t in gate_tests)
+        assert not any(t["name"] == "test_suppl" for t in gate_tests)
+
+
+class TestStrictGateMode:
+    """Strict gate mode checks both acceptance and supplementary tests."""
+
+    async def test_strict_gate_checks_all_tests(self, integ_repo, tmp_path, agent):
+        """In strict mode, gate checks acceptance + supplementary tests."""
+        config_path = tmp_path / "config_strict.yaml"
+        config_path.write_text("""\
+agents:
+  default: claude-code
+  available:
+    claude-code:
+      type: claude_code
+reviewers:
+  design: [claude-code]
+  develop: [claude-code]
+review_policy:
+  max_review_rounds: 3
+gate:
+  mode: strict
+issue_store:
+  dir: .shadowcoder/issues
+worktree:
+  base_dir: .shadowcoder/worktrees
+""")
+        config = Config(str(config_path))
+        assert config.get_gate_mode() == "strict"
+
+        AgentRegistry.register("claude_code", lambda cfg: agent)
+        bus = MessageBus()
+        wt_manager = WorktreeManager(config.get_worktree_dir())
+        task_manager = TaskManager(wt_manager)
+        store = IssueStore(str(integ_repo), config)
+        registry = AgentRegistry(config)
+        registry._instances["claude-code"] = agent
+        engine = Engine(bus, store, task_manager, registry, config, str(integ_repo))
+
+        store.create("Strict gate")
+        fb = store.load_feedback(1)
+        fb["acceptance_tests"] = [{"name": "test_a", "description": "a",
+                                    "expected_behavior": "b", "category": "acceptance",
+                                    "round_proposed": 1}]
+        fb["supplementary_tests"] = [{"name": "test_s", "description": "c",
+                                       "expected_behavior": "d", "category": "acceptance",
+                                       "round_proposed": 1}]
+        store.save_feedback(1, fb)
+
+        gate_tests = engine._get_gate_tests(1)
+        assert any(t["name"] == "test_a" for t in gate_tests)
+        assert any(t["name"] == "test_s" for t in gate_tests)
