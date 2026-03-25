@@ -74,7 +74,8 @@ class ClaudeCodeAgent(BaseAgent):
             return None  # inherit parent environment
         import os
         env = os.environ.copy()
-        env.update(custom_env)
+        for k, v in custom_env.items():
+            env[k] = os.path.expandvars(str(v))
         return env
 
     async def _run_claude(self, prompt: str, cwd: str | None = None,
