@@ -1376,6 +1376,26 @@ class TestAcceptanceContract:
         assert len(fb.get("supplementary_tests", [])) == 1
         assert fb["supplementary_tests"][0]["name"] == "test_edge_case"
 
+    async def test_developer_sees_both_test_types(self, system):
+        """Developer context includes both acceptance and supplementary tests."""
+        engine, store = system["engine"], system["store"]
+
+        store.create("Dev context")
+        fb = store.load_feedback(1)
+        fb["acceptance_tests"] = [{"name": "test_core", "description": "core",
+                                    "expected_behavior": "works", "category": "acceptance",
+                                    "round_proposed": 1}]
+        fb["supplementary_tests"] = [{"name": "test_edge", "description": "edge",
+                                       "expected_behavior": "handled", "category": "acceptance",
+                                       "round_proposed": 2}]
+        store.save_feedback(1, fb)
+
+        result = engine._format_acceptance_tests_for_developer(1)
+        assert "test_core" in result
+        assert "test_edge" in result
+        assert "acceptance" in result.lower() or "Acceptance" in result
+        assert "supplementary" in result.lower() or "Supplementary" in result
+
     async def test_standard_gate_only_checks_acceptance(self, system):
         """In standard mode, gate only checks acceptance_tests."""
         bus, store, agent, engine = (

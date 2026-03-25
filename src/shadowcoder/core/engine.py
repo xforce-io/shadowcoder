@@ -393,15 +393,32 @@ class Engine:
         return "\n".join(lines)
 
     def _format_acceptance_tests_for_developer(self, issue_id: int) -> str:
-        """Format accumulated acceptance tests for developer context."""
+        """Format all tests for developer context, distinguishing types."""
         fb = self.issue_store.load_feedback(issue_id)
-        tests = fb.get("proposed_tests", [])
-        if not tests:
-            return ""
-        lines = ["Acceptance tests to implement (from reviewer):"]
-        for tc in tests:
-            lines.append(f"  - {tc['name']}: {tc['description']} → {tc['expected_behavior']}")
-        lines.append("\nYou must write executable tests for each. Place them in the project's existing test directory.")
+        acceptance = fb.get("acceptance_tests", [])
+        supplementary = fb.get("supplementary_tests", [])
+        # Fallback for legacy issues without categorized tests
+        if not acceptance and not supplementary:
+            tests = fb.get("proposed_tests", [])
+            if not tests:
+                return ""
+            lines = ["Acceptance tests to implement (from reviewer):"]
+            for tc in tests:
+                lines.append(f"  - {tc['name']}: {tc['description']} → {tc['expected_behavior']}")
+            lines.append("\nYou must write executable tests for each.")
+            return "\n".join(lines)
+
+        lines = []
+        if acceptance:
+            lines.append("Acceptance tests (MUST pass for gate):")
+            for tc in acceptance:
+                lines.append(f"  - {tc['name']}: {tc['description']} → {tc['expected_behavior']}")
+        if supplementary:
+            lines.append("Supplementary tests (should implement for quality):")
+            for tc in supplementary:
+                lines.append(f"  - {tc['name']}: {tc['description']} → {tc['expected_behavior']}")
+        if lines:
+            lines.append("\nYou must write executable tests for each. Place them in the project's existing test directory.")
         return "\n".join(lines)
 
     @staticmethod
