@@ -172,6 +172,10 @@ async def test_review_decision_logic():
     from shadowcoder.agents.types import ReviewOutput, ReviewComment, Severity
 
     engine_mock = MagicMock(spec=E)
+    # config is set in __init__, not a class attr — must attach manually
+    config_mock = MagicMock()
+    config_mock.get_pass_threshold.return_value = "no_critical"
+    engine_mock.config = config_mock
 
     # No comments → pass
     review_pass = ReviewOutput(comments=[], reviewer="mock")
@@ -190,12 +194,18 @@ async def test_review_decision_logic():
     ], reviewer="mock")
     assert E._review_decision(engine_mock, review_cond2) == "conditional_pass"
 
-    # HIGH=3 → retry
+    # HIGH=3 → retry (lenient mode: 3+ HIGH = retry)
     review_retry = ReviewOutput(comments=[
         ReviewComment(severity=Severity.HIGH, message="h1"),
         ReviewComment(severity=Severity.HIGH, message="h2"),
         ReviewComment(severity=Severity.HIGH, message="h3"),
     ], reviewer="mock")
+    assert E._review_decision(engine_mock, review_retry) == "retry"
+
+    # _review_decision does not depend on threshold — always same logic
+    # (threshold only affects how conditional_pass is handled downstream)
+    config_mock.get_pass_threshold.return_value = "no_high_or_critical"
+    assert E._review_decision(engine_mock, review_cond) == "conditional_pass"
     assert E._review_decision(engine_mock, review_retry) == "retry"
 
     # CRITICAL=1 → retry (even if no HIGH)

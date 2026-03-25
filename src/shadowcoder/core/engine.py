@@ -254,7 +254,13 @@ class Engine:
         return diff
 
     def _review_decision(self, review) -> str:
-        """Decide based on comment severity counts. Pure symbolic."""
+        """Decide based on comment severity counts.
+
+        Returns: "pass", "conditional_pass", or "retry".
+        CRITICAL always → retry. HIGH 1-2 → conditional_pass. HIGH 3+ → retry.
+        The pass_threshold config controls what happens with conditional_pass
+        downstream (design: always accept; develop: see _run_develop_cycle).
+        """
         from shadowcoder.agents.types import Severity
         critical = sum(1 for c in review.comments if c.severity == Severity.CRITICAL)
         high = sum(1 for c in review.comments if c.severity == Severity.HIGH)
@@ -685,6 +691,7 @@ class Engine:
 
         try:
             gate_fail_count = 0
+            conditional_pass_count = 0
             last_gate_output = ""
             current_session_id = str(uuid.uuid4())
             use_resume = False
@@ -806,16 +813,36 @@ class Engine:
 
                 decision = self._review_decision(last_review) if last_review else "retry"
 
-                if decision in ("pass", "conditional_pass"):
+                if decision == "pass":
                     self.issue_store.transition_status(issue.id, IssueStatus.DONE)
                     self._log(issue.id,
-                        f"Dev Review R{round_num} — {decision.upper()} → done")
+                        f"Dev Review R{round_num} — PASS → done")
                     self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
                     self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
+
+                if decision == "conditional_pass":
+                    threshold = self.config.get_pass_threshold()
+                    if threshold != "no_high_or_critical" or conditional_pass_count > 0:
+                        # Lenient mode: accept immediately.
+                        # Strict mode, second conditional_pass: accept to avoid loop.
+                        suffix = " (2nd)" if conditional_pass_count > 0 else ""
+                        self.issue_store.transition_status(issue.id, IssueStatus.DONE)
+                        self._log(issue.id,
+                            f"Dev Review R{round_num} — CONDITIONAL_PASS{suffix} → done")
+                        self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
+                        self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
+                        task.status = TaskStatus.COMPLETED
+                        await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
+                            {"issue_id": issue.id, "task_id": task.task_id}))
+                        return
+                    # Strict mode, first conditional_pass: fix HIGH issues
+                    conditional_pass_count += 1
+                    self._log(issue.id,
+                        f"Dev Review R{round_num} — CONDITIONAL_PASS → 再修一轮 HIGH issues")
 
                 # retry — fresh session for next develop (review feedback may change direction)
                 current_session_id = str(uuid.uuid4())

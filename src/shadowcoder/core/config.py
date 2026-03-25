@@ -74,6 +74,11 @@ class Config:
                     result["env"] = cloud_env
         return result
 
+    def get_pass_threshold(self) -> str:
+        """Get review pass threshold: 'no_high_or_critical' or 'no_critical'."""
+        return self._data.get("review_policy", {}).get(
+            "pass_threshold", "no_critical")
+
     def get_max_review_rounds(self) -> int:
         return self._data.get("review_policy", {}).get("max_review_rounds", 3)
 
