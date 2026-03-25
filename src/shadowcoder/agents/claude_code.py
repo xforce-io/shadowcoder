@@ -90,29 +90,35 @@ class ClaudeCodeAgent(BaseAgent):
         if system_prompt:
             cmd.extend(["--system-prompt", system_prompt])
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=self._get_env(),
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
-                timeout=3600  # 60 minutes
+        last_err = None
+        for attempt in range(1, 4):
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=self._get_env(),
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise RuntimeError("claude CLI timed out after 30 minutes")
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode("utf-8")),
+                    timeout=3600  # 60 minutes
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise RuntimeError("claude CLI timed out after 60 minutes")
 
-        if proc.returncode != 0:
-            err = stderr.decode().strip()
-            logger.error("claude CLI failed (rc=%d): %s", proc.returncode, err)
-            raise RuntimeError(f"claude CLI failed: {err}")
+            if proc.returncode == 0:
+                return stdout.decode("utf-8")
 
-        return stdout.decode("utf-8")
+            last_err = stderr.decode().strip()
+            logger.warning("claude CLI failed (rc=%d, attempt %d/3): %s",
+                          proc.returncode, attempt, last_err)
+            if attempt < 3:
+                await asyncio.sleep(5 * attempt)
+
+        raise RuntimeError(f"claude CLI failed after 3 attempts: {last_err}")
 
     async def _run_claude_with_usage(self, prompt: str, cwd: str | None = None,
                                       system_prompt: str | None = None,
@@ -134,27 +140,38 @@ class ClaudeCodeAgent(BaseAgent):
         elif resume_id:
             cmd.extend(["--resume", resume_id])
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
-            env=self._get_env(),
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
-                timeout=3600  # 60 minutes
+        last_err = None
+        for attempt in range(1, 4):
+            attempt_start = time.monotonic()
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+                env=self._get_env(),
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise RuntimeError("claude CLI timed out after 30 minutes")
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode("utf-8")),
+                    timeout=3600  # 60 minutes
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise RuntimeError("claude CLI timed out after 60 minutes")
+
+            if proc.returncode == 0:
+                break
+
+            last_err = stderr.decode().strip()
+            logger.warning("claude CLI failed (rc=%d, attempt %d/3): %s",
+                          proc.returncode, attempt, last_err)
+            if attempt < 3:
+                await asyncio.sleep(5 * attempt)
+        else:
+            raise RuntimeError(f"claude CLI failed after 3 attempts: {last_err}")
+
         duration_ms = int((time.monotonic() - start) * 1000)
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"claude CLI failed: {stderr.decode().strip()}")
-
         data = json.loads(stdout.decode("utf-8"))
 
         # Extract text result from JSON response
