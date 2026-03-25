@@ -14,6 +14,7 @@ class IssueStatus(Enum):
     DEV_REVIEW = "dev_review"
     DONE = "done"
     FAILED = "failed"
+    IN_PROGRESS = "in_progress"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
 
@@ -34,6 +35,7 @@ VALID_TRANSITIONS: dict[IssueStatus, set[IssueStatus]] = {
     IssueStatus.DEV_REVIEW: {IssueStatus.DEVELOPING, IssueStatus.DONE, IssueStatus.BLOCKED, IssueStatus.FAILED, IssueStatus.CANCELLED},
     IssueStatus.DONE: {IssueStatus.APPROVED},
     IssueStatus.FAILED: {IssueStatus.DESIGNING, IssueStatus.DEVELOPING, IssueStatus.DONE, IssueStatus.BLOCKED, IssueStatus.CANCELLED},
+    IssueStatus.IN_PROGRESS: {IssueStatus.CREATED, IssueStatus.APPROVED, IssueStatus.DESIGNING, IssueStatus.DEVELOPING, IssueStatus.FAILED, IssueStatus.CANCELLED},
     IssueStatus.BLOCKED: {IssueStatus.DESIGNING, IssueStatus.DEVELOPING, IssueStatus.APPROVED, IssueStatus.DONE, IssueStatus.CANCELLED},
     IssueStatus.CANCELLED: set(),
 }

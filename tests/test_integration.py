@@ -1613,3 +1613,83 @@ class TestGateStrayFiles:
         ok, msg, output = await env["engine"]._gate_check(
             issue.id, task.worktree_path, [])
         assert "WARNING" in output or "Stray" in output
+
+
+class TestInProgressRecovery:
+    async def test_in_progress_develop_recovers(self, system):
+        """IN_PROGRESS with develop section -> run recovers to APPROVED -> develop resumes."""
+        env = system
+        store = env["store"]
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Recovery test"}))
+        issue = store.list_all()[-1]
+        issue.status = IssueStatus.IN_PROGRESS
+        issue.sections["设计"] = "Test design"
+        issue.sections["开发"] = "Test develop WIP"
+        store.save(issue)
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"issue_id": issue.id}))
+        issue = store.get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+    async def test_in_progress_design_recovers(self, system):
+        """IN_PROGRESS with design section only -> run recovers to CREATED -> design restarts."""
+        env = system
+        store = env["store"]
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Recovery test design"}))
+        issue = store.list_all()[-1]
+        store.update_section(issue.id, "设计", "WIP design")
+        issue = store.get(issue.id)
+        issue.status = IssueStatus.IN_PROGRESS
+        store.save(issue)
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"issue_id": issue.id}))
+        issue = store.get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+    async def test_in_progress_no_sections_restarts_design(self, system):
+        """IN_PROGRESS with no sections -> run restarts from design."""
+        env = system
+        store = env["store"]
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Recovery test empty"}))
+        issue = store.list_all()[-1]
+        issue.status = IssueStatus.IN_PROGRESS
+        store.save(issue)
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"issue_id": issue.id}))
+        issue = store.get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+    async def test_failed_with_develop_section_resumes_develop(self, system):
+        """FAILED with develop section -> run recovers to APPROVED -> develop resumes."""
+        env = system
+        store = env["store"]
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Failed recovery develop"}))
+        issue = store.list_all()[-1]
+        issue.status = IssueStatus.FAILED
+        issue.sections["设计"] = "Test design"
+        issue.sections["开发"] = "Develop WIP"
+        store.save(issue)
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"issue_id": issue.id}))
+        issue = store.get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+    async def test_failed_with_design_only_restarts_design(self, system):
+        """FAILED with design section only -> run restarts from design."""
+        env = system
+        store = env["store"]
+        await env["bus"].publish(Message(MessageType.CMD_CREATE_ISSUE,
+            {"title": "Failed recovery design"}))
+        issue = store.list_all()[-1]
+        store.update_section(issue.id, "设计", "WIP design")
+        issue = store.get(issue.id)
+        issue.status = IssueStatus.FAILED
+        store.save(issue)
+
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"issue_id": issue.id}))
+        issue = store.get(issue.id)
+        assert issue.status == IssueStatus.DONE

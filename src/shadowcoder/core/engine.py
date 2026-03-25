@@ -917,18 +917,18 @@ class Engine:
         issue = self.issue_store.get(issue_id)
 
         # Recover interrupted issue: infer which phase to resume
-        if issue.status == IssueStatus.IN_PROGRESS:
+        if issue.status in (IssueStatus.IN_PROGRESS, IssueStatus.FAILED):
             stage = self._infer_blocked_stage(issue)
             if stage == "develop":
-                self._log(issue_id, "run 恢复: IN_PROGRESS → 继续 develop")
+                self._log(issue_id, f"run 恢复: {issue.status.value} → 继续 develop")
                 issue.status = IssueStatus.APPROVED
             else:
-                self._log(issue_id, "run 恢复: IN_PROGRESS → 重跑 design")
+                self._log(issue_id, f"run 恢复: {issue.status.value} → 重跑 design")
                 issue.status = IssueStatus.CREATED
             self.issue_store.save(issue)
 
         # Design phase
-        if issue.status in (IssueStatus.CREATED, IssueStatus.FAILED, IssueStatus.BLOCKED):
+        if issue.status in (IssueStatus.CREATED, IssueStatus.BLOCKED):
             await self._on_design(Message(MessageType.CMD_DESIGN, {"issue_id": issue_id}))
             issue = self.issue_store.get(issue_id)
             if issue.status == IssueStatus.BLOCKED:
@@ -950,9 +950,14 @@ class Engine:
         self._log(issue_id, f"run 结束: status={issue.status.value}")
 
     def _infer_blocked_stage(self, issue):
+        """Infer which stage was running based on issue sections."""
         if "Dev Review" in issue.sections:
             return "develop"
+        if "开发" in issue.sections:
+            return "develop"
         if "Design Review" in issue.sections:
+            return "design"
+        if "设计" in issue.sections:
             return "design"
         return None
 

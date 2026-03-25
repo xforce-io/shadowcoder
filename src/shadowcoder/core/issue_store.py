@@ -163,6 +163,10 @@ class IssueStore:
         issue.assignee = agent_name
         self._save(issue)
 
+    def save(self, issue: Issue) -> None:
+        """Persist an issue directly, bypassing transition validation."""
+        self._save(issue)
+
     def _save(self, issue: Issue) -> None:
         self.base.mkdir(parents=True, exist_ok=True)
         post = frontmatter.Post(
