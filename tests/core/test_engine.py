@@ -488,3 +488,43 @@ async def test_gate_fail_escalation(bus, store, task_mgr, config):
 
     # Reviewer should have been called for gate escalation + normal review
     assert agent.review.call_count >= 2  # at least: 1 escalation + 1 normal review
+
+
+@pytest.fixture
+def integ_env(bus, store, task_mgr, registry_with, config):
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    return {"engine": engine}
+
+
+def test_extract_gate_failure_summary_pytest(integ_env):
+    """Extracts FAILED lines and error lines from pytest output."""
+    engine = integ_env["engine"]
+    output = (
+        "tests/test_foo.py::test_bar PASSED\n"
+        "tests/test_foo.py::test_baz FAILED\n"
+        "E   AttributeError: 'Foo' object has no attribute 'bar'\n"
+        "========= 1 failed, 1 passed ========="
+    )
+    summary = engine._extract_gate_failure_summary(output)
+    assert "FAILED" in summary
+    assert "AttributeError" in summary
+    assert "PASSED" not in summary
+
+
+def test_extract_gate_failure_summary_cargo(integ_env):
+    engine = integ_env["engine"]
+    output = "thread 'test_foo' panicked at 'assertion failed', src/lib.rs:10"
+    summary = engine._extract_gate_failure_summary(output)
+    assert "panicked" in summary
+
+
+def test_extract_gate_failure_summary_go(integ_env):
+    engine = integ_env["engine"]
+    output = "--- FAIL: TestFoo (0.01s)\n    foo_test.go:15: expected 1, got 2"
+    summary = engine._extract_gate_failure_summary(output)
+    assert "FAIL: TestFoo" in summary
+
+
+def test_extract_gate_failure_summary_empty(integ_env):
+    engine = integ_env["engine"]
+    assert engine._extract_gate_failure_summary("all tests passed") == ""

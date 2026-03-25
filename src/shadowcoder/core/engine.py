@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import re as _re
 import uuid
 from pathlib import Path
 
@@ -97,6 +98,22 @@ class Engine:
             return output
         half = max_chars // 2
         return output[:half] + "\n\n... [truncated] ...\n\n" + output[-half:]
+
+    def _extract_gate_failure_summary(self, gate_output: str) -> str:
+        """Extract FAILED test names and key error lines from gate output."""
+        lines = gate_output.splitlines()
+        summary_parts = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("FAILED ") or stripped.endswith(" FAILED"):
+                summary_parts.append(stripped)
+            elif _re.match(r'^E\s+\w*Error:', stripped):
+                summary_parts.append(stripped)
+            elif "panicked at" in stripped:
+                summary_parts.append(stripped)
+            elif stripped.startswith("--- FAIL:"):
+                summary_parts.append(stripped)
+        return "\n".join(summary_parts)
 
     async def _run_command(self, cmd: str, cwd: str) -> tuple[bool, str]:
         """Run a shell command, return (passed, output)."""
@@ -685,6 +702,7 @@ class Engine:
                 latest_review = self._get_latest_review(issue.id, review_section_key)
                 ctx_dict = {
                     "worktree_path": task.worktree_path,
+                    "gate_failure_summary": self._extract_gate_failure_summary(last_gate_output) if last_gate_output else "",
                     "latest_review": latest_review,
                     "feedback_summary": self._format_feedback_for_agent(issue.id),
                     "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),

@@ -173,6 +173,9 @@ class ClaudeCodeAgent(BaseAgent):
         """Build context string from issue sections + latest full review."""
         issue = request.issue
         parts = [f"Issue: {issue.title} (#{issue.id})"]
+        gate_summary = request.context.get("gate_failure_summary", "")
+        if gate_summary:
+            parts.append(f"\n!!! PREVIOUS GATE FAILURES - FIX THESE FIRST !!!\n{gate_summary}")
         for section_name in ["需求", "设计", "开发步骤", "测试"]:
             content = issue.sections.get(section_name, "")
             if content:
