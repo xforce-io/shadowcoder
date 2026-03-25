@@ -47,7 +47,8 @@ def test_review_output_with_new_fields():
 def test_load_save_feedback(store):
     store.create("Test")
     fb = store.load_feedback(1)
-    assert fb == {"items": [], "proposed_tests": []}
+    assert fb == {"items": [], "proposed_tests": [],
+                  "acceptance_tests": [], "supplementary_tests": []}
 
     fb["items"].append({"id": "F1", "category": "high", "description": "bug",
                         "round_introduced": 1, "times_raised": 1,

@@ -36,9 +36,14 @@ class IssueStore:
     def load_feedback(self, issue_id: int) -> dict:
         path = self._feedback_path(issue_id)
         if not path.exists():
-            return {"items": [], "proposed_tests": []}
+            return {"items": [], "proposed_tests": [],
+                    "acceptance_tests": [], "supplementary_tests": []}
         import json
-        return json.loads(path.read_text(encoding="utf-8"))
+        fb = json.loads(path.read_text(encoding="utf-8"))
+        # Migrate: ensure new keys exist
+        fb.setdefault("acceptance_tests", [])
+        fb.setdefault("supplementary_tests", [])
+        return fb
 
     def save_feedback(self, issue_id: int, feedback: dict) -> None:
         path = self._feedback_path(issue_id)
