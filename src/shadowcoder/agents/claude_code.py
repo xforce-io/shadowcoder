@@ -14,6 +14,33 @@ from shadowcoder.agents.types import (
 
 logger = logging.getLogger(__name__)
 
+# Default role instructions — used when config doesn't specify custom ones.
+DEFAULT_ROLE_INSTRUCTIONS: dict[str, str] = {
+    "designer": (
+        "你是一位资深系统架构师。你注重模块解耦、接口清晰和可测试性。"
+        "你的设计应该简洁务实，避免过度工程化。"
+        "优先考虑最简方案，只在必要时引入抽象层。"
+    ),
+    "design_reviewer": (
+        "你是一位严格的架构评审专家。你关注设计的完整性、一致性和可扩展性。"
+        "你会质疑不必要的复杂性，检查边界情况是否被考虑，"
+        "并确保设计文档能指导开发者正确实现。"
+        "对设计缺陷要直接指出，不要客气。"
+    ),
+    "developer": (
+        "你是一位务实的高级工程师。你的首要目标是写出能工作、能通过测试的代码。"
+        "你遵循项目现有的代码风格和约定。"
+        "你重视代码的可读性和可维护性，但不会为了完美而过度重构。"
+        "如果有 review 反馈，你会逐条解决。"
+    ),
+    "code_reviewer": (
+        "你是一位严格的代码评审专家。你关注逻辑正确性、边界情况和安全性。"
+        "你会检查测试无法覆盖的潜在问题：竞态条件、资源泄漏、错误处理遗漏。"
+        "你不会纠结于风格问题，而是聚焦于真正影响正确性和可靠性的问题。"
+        "对发现的问题要给出具体的修改建议。"
+    ),
+}
+
 # Map severity strings to enum
 _SEVERITY_MAP = {
     "critical": Severity.CRITICAL,
@@ -31,6 +58,13 @@ class ClaudeCodeAgent(BaseAgent):
 
     def _get_permission_mode(self) -> str:
         return self.config.get("permission_mode", "auto")
+
+    def _get_role_instruction(self, role: str) -> str:
+        """Get role instruction: config override > default > empty."""
+        custom = self.config.get("roles", {}).get(role, {}).get("instruction")
+        if custom:
+            return custom
+        return DEFAULT_ROLE_INSTRUCTIONS.get(role, "")
 
     def _get_env(self) -> dict[str, str] | None:
         """Build environment for subprocess, merging custom env vars if configured."""
@@ -79,7 +113,10 @@ class ClaudeCodeAgent(BaseAgent):
         return stdout.decode("utf-8")
 
     async def _run_claude_with_usage(self, prompt: str, cwd: str | None = None,
-                                      system_prompt: str | None = None) -> tuple[str, AgentUsage]:
+                                      system_prompt: str | None = None,
+                                      session_id: str | None = None,
+                                      resume_id: str | None = None,
+                                      ) -> tuple[str, AgentUsage]:
         """Call claude CLI with JSON output to capture usage stats."""
         start = time.monotonic()
         cmd = [
@@ -90,6 +127,10 @@ class ClaudeCodeAgent(BaseAgent):
         ]
         if system_prompt:
             cmd.extend(["--system-prompt", system_prompt])
+        if session_id:
+            cmd.extend(["--session-id", session_id])
+        elif resume_id:
+            cmd.extend(["--resume", resume_id])
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -167,9 +208,10 @@ class ClaudeCodeAgent(BaseAgent):
 
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
         context = self._build_context(request)
-        system = dedent("""\
-            You are a senior technical advisor. Quickly assess the feasibility
-            of this project. Do NOT produce a full design.
+        role_instruction = self._get_role_instruction("designer")
+        system = f"{role_instruction}\n\n" if role_instruction else ""
+        system += dedent("""\
+            Quickly assess the feasibility of this project. Do NOT produce a full design.
 
             Output ONLY JSON:
             {
@@ -202,9 +244,10 @@ class ClaudeCodeAgent(BaseAgent):
         cwd = request.context.get("worktree_path")
         context = self._build_context(request)
 
-        system = dedent("""\
-            You are a senior software architect. Produce a CONCISE technical
-            design document (target 5,000-15,000 characters).
+        role_instruction = self._get_role_instruction("designer")
+        system = f"{role_instruction}\n\n" if role_instruction else ""
+        system += dedent("""\
+            Produce a CONCISE technical design document (target 5,000-15,000 characters).
             Focus on: architecture decisions, component interfaces, data flow,
             error handling strategy.
             Do NOT include implementation details (code, pseudocode, function
@@ -228,9 +271,10 @@ class ClaudeCodeAgent(BaseAgent):
         cwd = request.context.get("worktree_path")
         context = self._build_context(request)
 
-        system = dedent("""\
-            You are a senior software engineer. Implement the code based on
-            the design document. You MUST:
+        role_instruction = self._get_role_instruction("developer")
+        system = f"{role_instruction}\n\n" if role_instruction else ""
+        system += dedent("""\
+            Implement the code based on the design document. You MUST:
             1. Create actual source files in the working directory
             2. Write tests
             3. Make sure the code compiles/runs without errors
@@ -245,7 +289,12 @@ class ClaudeCodeAgent(BaseAgent):
             The previous summary will be REPLACED by your output.
         """)
         prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
-        result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
+        # Session semantics: engine passes session_id or resume_id via context
+        session_id = request.context.get("session_id")
+        resume_id = request.context.get("resume_id")
+        result, usage = await self._run_claude_with_usage(
+            prompt, cwd=cwd, system_prompt=system,
+            session_id=session_id, resume_id=resume_id)
         files_changed = await self._get_files_changed(cwd or "")
         return DevelopOutput(summary=result, files_changed=files_changed, usage=usage)
 
@@ -285,14 +334,18 @@ class ClaudeCodeAgent(BaseAgent):
         is_develop_review = bool(request.context.get("code_diff"))
 
         if is_develop_review:
-            system = dedent("""\
+            role_instruction = self._get_role_instruction("code_reviewer")
+            system = f"{role_instruction}\n\n" if role_instruction else ""
+            system += dedent("""\
             You are reviewing a code change. The git diff is provided below.
             The code has already passed build and all tests via the gate.
             If gate failure output is provided, analyze why tests are failing.
             Focus on: logic correctness, design quality, potential issues that tests don't catch.
             Do NOT check whether source files exist — that is the gate's job.""")
         else:
-            system = dedent("""\
+            role_instruction = self._get_role_instruction("design_reviewer")
+            system = f"{role_instruction}\n\n" if role_instruction else ""
+            system += dedent("""\
             You are reviewing a DESIGN DOCUMENT, not code.
             Evaluate the design for: completeness, architectural soundness,
             interface clarity, error handling strategy, and testability.

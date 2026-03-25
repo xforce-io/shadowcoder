@@ -203,3 +203,39 @@ def test_agent_usage_defaults():
     usage = AgentUsage()
     assert usage.phase == ""
     assert usage.round_num == 0
+
+
+async def test_develop_passes_session_id(agent, sample_request):
+    """develop() forwards session_id to _run_claude_with_usage."""
+    sample_request.action = "develop"
+    sample_request.context["session_id"] = "test-uuid-1234"
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=("Code", _make_usage()))
+    agent._get_files_changed = AsyncMock(return_value=[])
+    await agent.develop(sample_request)
+    call_kwargs = agent._run_claude_with_usage.call_args[1]
+    assert call_kwargs.get("session_id") == "test-uuid-1234"
+
+
+async def test_develop_passes_resume_id(agent, sample_request):
+    """develop() forwards resume_id to _run_claude_with_usage."""
+    sample_request.action = "develop"
+    sample_request.context["resume_id"] = "test-uuid-5678"
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=("Code", _make_usage()))
+    agent._get_files_changed = AsyncMock(return_value=[])
+    await agent.develop(sample_request)
+    call_kwargs = agent._run_claude_with_usage.call_args[1]
+    assert call_kwargs.get("resume_id") == "test-uuid-5678"
+
+
+async def test_develop_no_session_by_default(agent, sample_request):
+    """develop() without session context passes no session params."""
+    sample_request.action = "develop"
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=("Code", _make_usage()))
+    agent._get_files_changed = AsyncMock(return_value=[])
+    await agent.develop(sample_request)
+    call_kwargs = agent._run_claude_with_usage.call_args[1]
+    assert call_kwargs.get("session_id") is None
+    assert call_kwargs.get("resume_id") is None
