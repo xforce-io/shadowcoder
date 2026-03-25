@@ -112,3 +112,94 @@ async def test_review_with_code_diff_uses_diff_context(agent, sample_request):
     call_args = agent._run_claude_with_usage.call_args
     prompt = call_args[0][0]
     assert "diff" in prompt.lower() or "Git Diff" in prompt
+
+
+# --- Role instruction tests ---
+
+
+def test_default_role_instructions(agent):
+    """Default role instructions are used when config has no roles."""
+    from shadowcoder.agents.claude_code import DEFAULT_ROLE_INSTRUCTIONS
+    for role in ("designer", "design_reviewer", "developer", "code_reviewer"):
+        assert agent._get_role_instruction(role) == DEFAULT_ROLE_INSTRUCTIONS[role]
+
+
+def test_custom_role_instruction_overrides_default():
+    """Config roles override default instructions."""
+    custom = ClaudeCodeAgent({
+        "type": "claude_code",
+        "roles": {
+            "designer": {"instruction": "Custom designer instruction"},
+        },
+    })
+    assert custom._get_role_instruction("designer") == "Custom designer instruction"
+    # Other roles still use defaults
+    from shadowcoder.agents.claude_code import DEFAULT_ROLE_INSTRUCTIONS
+    assert custom._get_role_instruction("developer") == DEFAULT_ROLE_INSTRUCTIONS["developer"]
+
+
+def test_unknown_role_returns_empty(agent):
+    """Unknown role returns empty string."""
+    assert agent._get_role_instruction("unknown_role") == ""
+
+
+async def test_design_prompt_includes_role_instruction(agent, sample_request):
+    """Design system prompt includes designer role instruction."""
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=("Design doc", _make_usage()))
+    await agent.design(sample_request)
+    call_args = agent._run_claude_with_usage.call_args
+    system_prompt = call_args[1].get("system_prompt") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1].get("system_prompt", "")
+    from shadowcoder.agents.claude_code import DEFAULT_ROLE_INSTRUCTIONS
+    assert DEFAULT_ROLE_INSTRUCTIONS["designer"] in system_prompt
+
+
+async def test_develop_prompt_includes_role_instruction(agent, sample_request):
+    """Develop system prompt includes developer role instruction."""
+    sample_request.action = "develop"
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=("Code", _make_usage()))
+    agent._get_files_changed = AsyncMock(return_value=[])
+    await agent.develop(sample_request)
+    call_args = agent._run_claude_with_usage.call_args
+    system_prompt = call_args[1].get("system_prompt") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1].get("system_prompt", "")
+    from shadowcoder.agents.claude_code import DEFAULT_ROLE_INSTRUCTIONS
+    assert DEFAULT_ROLE_INSTRUCTIONS["developer"] in system_prompt
+
+
+async def test_review_design_prompt_includes_role_instruction(agent, sample_request):
+    """Design review system prompt includes design_reviewer role instruction."""
+    sample_request.action = "review"
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
+    await agent.review(sample_request)
+    call_args = agent._run_claude_with_usage.call_args
+    system_prompt = call_args[1].get("system_prompt") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1].get("system_prompt", "")
+    from shadowcoder.agents.claude_code import DEFAULT_ROLE_INSTRUCTIONS
+    assert DEFAULT_ROLE_INSTRUCTIONS["design_reviewer"] in system_prompt
+
+
+async def test_review_code_prompt_includes_role_instruction(agent, sample_request):
+    """Code review system prompt includes code_reviewer role instruction."""
+    sample_request.action = "review"
+    sample_request.context["code_diff"] = "diff --git ..."
+    agent._run_claude_with_usage = AsyncMock(
+        return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
+    await agent.review(sample_request)
+    call_args = agent._run_claude_with_usage.call_args
+    system_prompt = call_args[1].get("system_prompt") or call_args[0][2] if len(call_args[0]) > 2 else call_args[1].get("system_prompt", "")
+    from shadowcoder.agents.claude_code import DEFAULT_ROLE_INSTRUCTIONS
+    assert DEFAULT_ROLE_INSTRUCTIONS["code_reviewer"] in system_prompt
+
+
+def test_agent_usage_has_phase_and_round():
+    usage = AgentUsage(input_tokens=100, output_tokens=50, duration_ms=500,
+                       cost_usd=0.01, phase="develop", round_num=2)
+    assert usage.phase == "develop"
+    assert usage.round_num == 2
+
+
+def test_agent_usage_defaults():
+    usage = AgentUsage()
+    assert usage.phase == ""
+    assert usage.round_num == 0

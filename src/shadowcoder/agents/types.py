@@ -26,6 +26,8 @@ class AgentUsage:
     output_tokens: int = 0
     duration_ms: int = 0
     cost_usd: float | None = None
+    phase: str = ""
+    round_num: int = 0
 
 
 @dataclass
