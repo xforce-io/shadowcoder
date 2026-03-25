@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from textwrap import dedent
 
@@ -404,12 +405,55 @@ class ClaudeCodeAgent(BaseAgent):
                 usage=usage,
             )
         except (json.JSONDecodeError, KeyError, IndexError) as e:
-            logger.warning("Failed to parse review JSON, treating as high-severity issue: %s", e)
-            return ReviewOutput(
-                comments=[ReviewComment(
+            logger.warning("Failed to parse review JSON: %s", e)
+            comments = self._extract_comments_from_text(result)
+            if not comments:
+                comments = [ReviewComment(
                     severity=Severity.HIGH,
-                    message=f"Review output could not be parsed: {result[:200]}",
-                )],
-                reviewer="claude-code",
-                usage=usage,
-            )
+                    message=f"Review output could not be parsed:\n{result}",
+                )]
+            return ReviewOutput(comments=comments, reviewer="claude-code", usage=usage)
+
+    def _extract_comments_from_text(self, text: str) -> list[ReviewComment]:
+        """Try to extract structured review comments from non-JSON text."""
+        items = re.split(r'\n(?=\d+[\.\)]\s|\-\s)', text.strip())
+        if len(items) <= 1 and not re.match(r'\d+[\.\)]\s|\-\s', text.strip()):
+            return []
+
+        severity_patterns = {
+            Severity.CRITICAL: r'(?:critical|严重|致命)',
+            Severity.HIGH: r'(?:high|高)',
+            Severity.MEDIUM: r'(?:medium|中)',
+            Severity.LOW: r'(?:low|低)',
+        }
+        bracket_pattern = re.compile(r'\[(CRITICAL|HIGH|MEDIUM|LOW)\]', re.IGNORECASE)
+        colon_pattern = re.compile(r'(?:severity|严重性)[：:]\s*(critical|high|medium|low)', re.IGNORECASE)
+
+        comments = []
+        for item in items:
+            item = item.strip()
+            if not item:
+                continue
+            clean = re.sub(r'^\d+[\.\)]\s*', '', item)
+            clean = re.sub(r'^-\s*', '', clean)
+            if not clean:
+                continue
+
+            severity = Severity.MEDIUM
+            bm = bracket_pattern.search(clean)
+            cm = colon_pattern.search(clean)
+            if bm:
+                severity = _SEVERITY_MAP[bm.group(1).lower()]
+                clean = bracket_pattern.sub('', clean).strip()
+            elif cm:
+                severity = _SEVERITY_MAP[cm.group(1).lower()]
+                clean = colon_pattern.sub('', clean).strip()
+                clean = clean.rstrip('。.')
+            else:
+                for sev, pat in severity_patterns.items():
+                    if re.search(pat, clean, re.IGNORECASE):
+                        severity = sev
+                        break
+
+            comments.append(ReviewComment(severity=severity, message=clean))
+        return comments
