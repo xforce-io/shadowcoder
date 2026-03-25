@@ -1037,7 +1037,7 @@ async def test_sql_engine_goal_driven(system):
 
     # Git verification
     result = subprocess.run(
-        ["git", "branch", "--list", "shadowcoder/*"],
+        ["git", "branch", "--list", "fix/1-*"],
         cwd=str(repo), capture_output=True, text=True,
     )
-    assert "shadowcoder/issue-1" in result.stdout
+    assert "fix/1-" in result.stdout

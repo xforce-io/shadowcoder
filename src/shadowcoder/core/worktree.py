@@ -23,13 +23,22 @@ class WorktreeManager:
     def _worktree_path(self, repo_path: str, issue_id: int) -> str:
         return str(Path(repo_path) / self.base_dir / f"issue-{issue_id}")
 
-    def _branch_name(self, issue_id: int) -> str:
-        return f"shadowcoder/issue-{issue_id}"
+    def _branch_name(self, issue_id: int, title: str = "") -> str:
+        slug = ""
+        if title:
+            slug = title.lower()
+            slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in slug)
+            while "--" in slug:
+                slug = slug.replace("--", "-")
+            slug = slug.strip("-")[:50].rstrip("-")
+        if slug:
+            return f"fix/{issue_id}-{slug}"
+        return f"fix/{issue_id}"
 
-    async def ensure(self, repo_path: str, issue_id: int) -> str:
+    async def ensure(self, repo_path: str, issue_id: int, title: str = "") -> str:
         """Ensure worktree exists for issue. Idempotent."""
         wt_path = self._worktree_path(repo_path, issue_id)
-        branch = self._branch_name(issue_id)
+        branch = self._branch_name(issue_id, title)
 
         # Already exists — return path
         if Path(wt_path).exists():

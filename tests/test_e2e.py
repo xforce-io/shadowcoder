@@ -238,10 +238,10 @@ async def test_e2e_happy_path(e2e_system):
 
     # Verify branch was created
     result = subprocess.run(
-        ["git", "branch", "--list", "shadowcoder/issue-1"],
+        ["git", "branch", "--list", "fix/1-*"],
         cwd=str(repo), capture_output=True, text=True,
     )
-    assert "shadowcoder/issue-1" in result.stdout
+    assert "fix/1-" in result.stdout
 
     # Verify agent was called correctly
     assert len(agent.execute_calls) == 1

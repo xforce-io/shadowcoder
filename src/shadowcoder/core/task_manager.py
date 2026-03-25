@@ -15,7 +15,7 @@ class TaskManager:
 
     async def create(self, issue: Issue, repo_path: str, action: str, agent_name: str) -> Task:
         task_id = str(uuid.uuid4())[:8]
-        worktree_path = await self.worktree_manager.ensure(repo_path, issue.id)
+        worktree_path = await self.worktree_manager.ensure(repo_path, issue.id, title=issue.title)
         task = Task(
             task_id=task_id,
             issue_id=issue.id,

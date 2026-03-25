@@ -18,10 +18,10 @@ async def test_create_worktree_branch(tmp_repo, wt_manager):
     import subprocess
     await wt_manager.ensure(str(tmp_repo), 1)
     result = subprocess.run(
-        ["git", "branch", "--list", "shadowcoder/issue-1"],
+        ["git", "branch", "--list", "fix/1"],
         cwd=str(tmp_repo), capture_output=True, text=True,
     )
-    assert "shadowcoder/issue-1" in result.stdout
+    assert "fix/1" in result.stdout
 
 
 async def test_remove_worktree(tmp_repo, wt_manager):
@@ -59,10 +59,10 @@ async def test_cleanup(tmp_repo, wt_manager):
     assert not Path(wt_path).exists()
     # Branch should still exist
     result = subprocess.run(
-        ["git", "branch", "--list", "shadowcoder/issue-1"],
+        ["git", "branch", "--list", "fix/1"],
         cwd=str(tmp_repo), capture_output=True, text=True,
     )
-    assert "shadowcoder/issue-1" in result.stdout
+    assert "fix/1" in result.stdout
 
 
 async def test_cleanup_with_branch_delete(tmp_repo, wt_manager):
@@ -73,7 +73,7 @@ async def test_cleanup_with_branch_delete(tmp_repo, wt_manager):
     assert not Path(wt_path).exists()
     # Branch should be gone
     result = subprocess.run(
-        ["git", "branch", "--list", "shadowcoder/issue-1"],
+        ["git", "branch", "--list", "fix/1"],
         cwd=str(tmp_repo), capture_output=True, text=True,
     )
-    assert "shadowcoder/issue-1" not in result.stdout
+    assert "fix/1" not in result.stdout
