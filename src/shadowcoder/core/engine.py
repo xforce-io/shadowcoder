@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -37,12 +38,15 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
         self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
         self.bus.subscribe(MessageType.CMD_CLEANUP, self._on_cleanup)
+        self.bus.subscribe(MessageType.CMD_ITERATE, self._on_iterate)
 
-    def _track_usage(self, issue_id: int, usage: AgentUsage | None):
-        """Accumulate usage for an issue."""
+    def _track_usage(self, issue_id: int, usage: AgentUsage | None,
+                     phase: str = "", round_num: int = 0):
+        """Accumulate usage for an issue, stamping phase metadata."""
         if usage is None:
             return
-        self._usage_by_issue.setdefault(issue_id, []).append(usage)
+        stamped = dataclasses.replace(usage, phase=phase, round_num=round_num)
+        self._usage_by_issue.setdefault(issue_id, []).append(stamped)
 
     def _total_cost(self, issue_id: int) -> float:
         """Get total cost for an issue."""
@@ -56,17 +60,34 @@ class Engine:
                 sum(u.output_tokens for u in usages))
 
     def _usage_summary(self, issue_id: int) -> str:
-        """Format usage summary for logging."""
+        """Format usage summary with per-phase breakdown."""
         usages = self._usage_by_issue.get(issue_id, [])
         if not usages:
             return "No usage data"
         input_t, output_t = self._total_tokens(issue_id)
         cost = self._total_cost(issue_id)
         total_duration = sum(u.duration_ms for u in usages) / 1000
-        return (f"Calls: {len(usages)} | "
-                f"Tokens: {input_t:,} in + {output_t:,} out | "
-                f"Cost: ${cost:.4f} | "
-                f"Time: {total_duration:.1f}s")
+        lines = [
+            f"Calls: {len(usages)} | "
+            f"Tokens: {input_t:,} in + {output_t:,} out | "
+            f"Cost: ${cost:.4f} | "
+            f"Time: {total_duration:.1f}s"
+        ]
+
+        # Per-phase breakdown (only if phases are recorded)
+        phases: dict[str, list] = {}
+        for u in usages:
+            if u.phase:
+                phases.setdefault(u.phase, []).append(u)
+        if phases:
+            lines.append("Phase breakdown:")
+            for phase, phase_usages in phases.items():
+                p_cost = sum(u.cost_usd or 0 for u in phase_usages)
+                p_calls = len(phase_usages)
+                pct = (p_cost / cost * 100) if cost > 0 else 0
+                lines.append(f"  {phase}: {p_calls} calls, ${p_cost:.4f} ({pct:.0f}%)")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _truncate_output(output: str, max_chars: int = 3000) -> str:
@@ -256,7 +277,8 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_ERROR,
                     {"message": f"reviewer failed, retry {attempt}/{max_retries}"}))
 
-    def _update_feedback(self, issue_id: int, review, current_round: int):
+    def _update_feedback(self, issue_id: int, review, current_round: int,
+                         is_design_review: bool = False):
         """Update feedback state after a review. Pure symbolic logic."""
         fb = self.issue_store.load_feedback(issue_id)
         items = fb.get("items", [])
@@ -290,8 +312,9 @@ class Engine:
                 "escalation_level": 1,
             })
 
-        # Accumulate proposed tests
-        tests = fb.get("proposed_tests", [])
+        # Route proposed tests to the right bucket
+        target_key = "acceptance_tests" if is_design_review else "supplementary_tests"
+        tests = fb.get(target_key, [])
         for tc in review.proposed_tests:
             if not any(t["name"] == tc.name for t in tests):
                 tests.append({
@@ -301,9 +324,22 @@ class Engine:
                     "category": tc.category,
                     "round_proposed": current_round,
                 })
+        fb[target_key] = tests
+
+        # Also maintain proposed_tests as union for backward compat
+        all_tests = fb.get("proposed_tests", [])
+        for tc in review.proposed_tests:
+            if not any(t["name"] == tc.name for t in all_tests):
+                all_tests.append({
+                    "name": tc.name,
+                    "description": tc.description,
+                    "expected_behavior": tc.expected_behavior,
+                    "category": tc.category,
+                    "round_proposed": current_round,
+                })
+        fb["proposed_tests"] = all_tests
 
         fb["items"] = items
-        fb["proposed_tests"] = tests
         self.issue_store.save_feedback(issue_id, fb)
 
     def _format_feedback_for_agent(self, issue_id: int) -> str:
@@ -387,7 +423,7 @@ class Engine:
             request = AgentRequest(action="review", issue=issue, context=context)
             try:
                 review = await self._review_with_retry(reviewer, request)
-                self._track_usage(issue.id, review.usage)
+                self._track_usage(issue.id, review.usage, phase=f"{action}_review")
                 self.issue_store.append_review(issue.id, review_section_key, review)
                 last_review = review
                 decision = self._review_decision(review)
@@ -434,7 +470,7 @@ class Engine:
                 output = await agent.design(request)
                 content = output.document
 
-                self._track_usage(issue.id, output.usage)
+                self._track_usage(issue.id, output.usage, phase="design", round_num=round_num)
                 if output.usage:
                     self._log(issue.id,
                         f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
@@ -461,7 +497,7 @@ class Engine:
 
                 last_review = await self._run_all_reviewers(issue, task, "design", review_section_key)
                 if last_review:
-                    self._update_feedback(issue.id, last_review, round_num)
+                    self._update_feedback(issue.id, last_review, round_num, is_design_review=True)
 
                 decision = self._review_decision(last_review) if last_review else "retry"
 
@@ -559,7 +595,7 @@ class Engine:
                 files = output.files_changed
                 feat_summary = f" (files: {', '.join(files)})" if files else ""
 
-                self._track_usage(issue.id, output.usage)
+                self._track_usage(issue.id, output.usage, phase="develop", round_num=round_num)
                 if output.usage:
                     self._log(issue.id,
                         f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
@@ -612,7 +648,8 @@ class Engine:
                                         "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
                                     })
                                 review = await reviewer.review(review_request)
-                                self._update_feedback(issue.id, review, round_num)
+                                self._track_usage(issue.id, review.usage, phase="gate_escalation", round_num=round_num)
+                                self._update_feedback(issue.id, review, round_num, is_design_review=False)
                                 self.issue_store.append_review(issue.id, "Dev Review", review)
                             except Exception:
                                 pass  # reviewer analysis is best-effort
@@ -639,7 +676,7 @@ class Engine:
                 last_review = await self._run_all_reviewers(
                     issue, task, "develop", review_section_key, code_diff=code_diff)
                 if last_review:
-                    self._update_feedback(issue.id, last_review, round_num)
+                    self._update_feedback(issue.id, last_review, round_num, is_design_review=False)
                     fb = self.issue_store.load_feedback(issue.id)
                     proposed_tests = fb.get("proposed_tests", [])
 
@@ -711,7 +748,7 @@ class Engine:
                 context={"worktree_path": None})
             try:
                 pf = await agent.preflight(request)
-                self._track_usage(issue.id, pf.usage)
+                self._track_usage(issue.id, pf.usage, phase="preflight")
                 pf_summary = (f"Feasibility: {pf.feasibility} | "
                              f"Complexity: {pf.estimated_complexity} | "
                              f"Risks: {', '.join(pf.risks) or 'none identified'}")
@@ -833,6 +870,30 @@ class Engine:
                       "status": issue.status.value, "priority": issue.priority,
                       "tags": issue.tags, "assignee": issue.assignee,
                       "sections": list(issue.sections.keys())}}))
+
+    async def _on_iterate(self, msg):
+        """Iterate on a DONE issue: append new requirements, re-enter develop cycle."""
+        issue_id = msg.payload["issue_id"]
+        issue = self.issue_store.get(issue_id)
+
+        if issue.status != IssueStatus.DONE:
+            await self.bus.publish(Message(MessageType.EVT_ERROR, {
+                "message": f"issue #{issue_id} is not DONE, cannot iterate"}))
+            return
+
+        requirements = msg.payload.get("requirements", "")
+        if requirements:
+            existing = issue.sections.get("需求", "")
+            separator = "\n\n---\n\n" if existing else ""
+            self.issue_store.update_section(issue_id, "需求", existing + separator + requirements)
+            self._log(issue_id, f"Iterate: 追加需求\n{requirements[:200]}")
+
+        self.issue_store.transition_status(issue_id, IssueStatus.APPROVED)
+        self._log(issue_id, "Iterate: DONE → APPROVED, 重新进入 develop")
+        await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED, {
+            "issue_id": issue_id, "status": "approved"}))
+
+        await self._on_develop(Message(MessageType.CMD_DEVELOP, {"issue_id": issue_id}))
 
     async def _on_cleanup(self, msg):
         issue_id = msg.payload["issue_id"]
