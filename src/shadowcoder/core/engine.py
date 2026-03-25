@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import uuid
 from pathlib import Path
 
 from shadowcoder.agents.types import AgentRequest, AgentActionFailed, AgentUsage
@@ -596,6 +597,8 @@ class Engine:
         try:
             gate_fail_count = 0
             last_gate_output = ""
+            current_session_id = str(uuid.uuid4())
+            use_resume = False
 
             for round_num in range(1, max_rounds + 1):
                 issue = self.issue_store.get(issue.id)
@@ -608,16 +611,21 @@ class Engine:
 
                 agent = self.agents.get(issue.assignee or "default")
                 latest_review = self._get_latest_review(issue.id, review_section_key)
-                request = AgentRequest(action="develop", issue=issue,
-                    context={
-                        "worktree_path": task.worktree_path,
-                        "latest_review": latest_review,
-                        "feedback_summary": self._format_feedback_for_agent(issue.id),
-                        "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
-                        "gate_output": self._truncate_output(last_gate_output) if last_gate_output else "",
-                    })
+                ctx_dict = {
+                    "worktree_path": task.worktree_path,
+                    "latest_review": latest_review,
+                    "feedback_summary": self._format_feedback_for_agent(issue.id),
+                    "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
+                    "gate_output": self._truncate_output(last_gate_output) if last_gate_output else "",
+                }
+                if use_resume:
+                    ctx_dict["resume_id"] = current_session_id
+                else:
+                    ctx_dict["session_id"] = current_session_id
+                request = AgentRequest(action="develop", issue=issue, context=ctx_dict)
 
                 output = await agent.develop(request)
+                use_resume = True
                 content = output.summary
                 files = output.files_changed
                 feat_summary = f" (files: {', '.join(files)})" if files else ""
@@ -719,7 +727,10 @@ class Engine:
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
 
-                # retry
+                # retry — fresh session for next develop (review feedback may change direction)
+                current_session_id = str(uuid.uuid4())
+                use_resume = False
+
                 critical = sum(1 for c in last_review.comments
                                if last_review and c.severity.value == "critical") if last_review else 0
                 high = sum(1 for c in last_review.comments

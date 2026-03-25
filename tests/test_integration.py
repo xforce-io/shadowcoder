@@ -1469,3 +1469,83 @@ worktree:
         gate_tests = engine._get_gate_tests(1)
         assert any(t["name"] == "test_a" for t in gate_tests)
         assert any(t["name"] == "test_s" for t in gate_tests)
+
+
+# ===========================================================================
+# 15. Session resume semantics
+# ===========================================================================
+
+
+class TestSessionResume:
+    """Gate-fail session resume semantics."""
+
+    async def test_gate_fail_retry_uses_resume(self, system):
+        """Gate fail → next develop call gets resume_id, not session_id."""
+        bus, store, agent, engine = (
+            system["bus"], system["store"], system["agent"], system["engine"])
+
+        gate_count = {"n": 0}
+
+        async def gate_fn(issue_id, worktree_path, proposed_tests):
+            gate_count["n"] += 1
+            if gate_count["n"] == 1:
+                return False, "tests failed", "error output"
+            return True, "gate passed", "ok"
+
+        engine._gate_check = AsyncMock(side_effect=gate_fn)
+
+        await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, {"title": "Session resume"}))
+        await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+
+        agent.develop_calls.clear()
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+        assert store.get(1).status == IssueStatus.DONE
+
+        # First develop call: should have session_id (new session)
+        first_ctx = agent.develop_calls[0].context
+        assert first_ctx.get("session_id") is not None
+        assert first_ctx.get("resume_id") is None
+
+        # Second develop call (after gate fail): should have resume_id
+        second_ctx = agent.develop_calls[1].context
+        assert second_ctx.get("resume_id") == first_ctx["session_id"]
+        assert second_ctx.get("session_id") is None
+
+    async def test_review_retry_gets_new_session(self, system):
+        """After review retry, develop gets a fresh session_id (not resume)."""
+        bus, store, agent, engine = (
+            system["bus"], system["store"], system["agent"], system["engine"])
+
+        review_counter = {"n": 0}
+
+        async def review_fn(request):
+            review_counter["n"] += 1
+            if review_counter["n"] == 1:
+                return ReviewOutput(
+                    comments=[ReviewComment(severity=Severity.CRITICAL, message="bad")],
+                    reviewer="stub",
+                )
+            return ReviewOutput(
+                comments=[ReviewComment(severity=Severity.LOW, message="ok")],
+                reviewer="stub",
+            )
+
+        await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, {"title": "Review new session"}))
+        await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+
+        agent.develop_calls.clear()
+        agent.configure_review(review_fn)
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+        assert store.get(1).status == IssueStatus.DONE
+
+        # Both develop calls should have different session_ids (not resume)
+        first_sid = agent.develop_calls[0].context.get("session_id")
+        second_sid = agent.develop_calls[1].context.get("session_id")
+        assert first_sid is not None
+        assert second_sid is not None
+        assert first_sid != second_sid
+        # Neither should have resume_id
+        assert agent.develop_calls[0].context.get("resume_id") is None
+        assert agent.develop_calls[1].context.get("resume_id") is None
