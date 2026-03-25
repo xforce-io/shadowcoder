@@ -12,6 +12,7 @@ from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
 from shadowcoder.core.issue_store import IssueStore
+from shadowcoder.core.language import detect_language
 from shadowcoder.core.models import Issue, IssueStatus, TaskStatus
 from shadowcoder.core.task_manager import TaskManager
 
@@ -99,20 +100,28 @@ class Engine:
         half = max_chars // 2
         return output[:half] + "\n\n... [truncated] ...\n\n" + output[-half:]
 
-    def _extract_gate_failure_summary(self, gate_output: str) -> str:
+    def _extract_gate_failure_summary(self, gate_output: str, worktree_path: str = "") -> str:
         """Extract FAILED test names and key error lines from gate output."""
+        profile = detect_language(worktree_path) if worktree_path else None
         lines = gate_output.splitlines()
         summary_parts = []
         for line in lines:
             stripped = line.strip()
-            if stripped.startswith("FAILED ") or stripped.endswith(" FAILED"):
-                summary_parts.append(stripped)
-            elif _re.match(r'^E\s+\w*Error:', stripped):
-                summary_parts.append(stripped)
-            elif "panicked at" in stripped:
-                summary_parts.append(stripped)
-            elif stripped.startswith("--- FAIL:"):
-                summary_parts.append(stripped)
+            if profile:
+                for pat in profile.gate_failure_patterns:
+                    if _re.search(pat, stripped):
+                        summary_parts.append(stripped)
+                        break
+            else:
+                # Fallback: common patterns across languages
+                if stripped.startswith("FAILED ") or stripped.endswith(" FAILED"):
+                    summary_parts.append(stripped)
+                elif _re.match(r'^E\s+\w*Error:', stripped):
+                    summary_parts.append(stripped)
+                elif "panicked at" in stripped:
+                    summary_parts.append(stripped)
+                elif stripped.startswith("--- FAIL:"):
+                    summary_parts.append(stripped)
         return "\n".join(summary_parts)
 
     async def _run_command(self, cmd: str, cwd: str) -> tuple[bool, str]:
@@ -128,38 +137,20 @@ class Engine:
         passed = proc.returncode == 0
         return passed, output
 
-    async def _detect_test_command(self, worktree_path: str) -> str:
-        """Detect test command from project files."""
-        p = Path(worktree_path)
-        if (p / "Cargo.toml").exists():
-            return "cargo test 2>&1"
-        if (p / "go.mod").exists():
-            return "go test ./... 2>&1"
-        if (p / "package.json").exists():
-            return "npm test 2>&1"
-        if (p / "pyproject.toml").exists() or (p / "setup.py").exists():
-            return "python -m pytest -v 2>&1"
-        if (p / "Makefile").exists():
-            return "make test 2>&1"
-        raise RuntimeError(
-            f"Cannot detect test command for {worktree_path}. "
-            f"Set build.test_command in config.")
-
-    # Common patterns that indicate a test passed (language-agnostic heuristics)
-    _PASS_PATTERNS = (" ... ok", " PASSED", " passed", "PASS: ", " ✓")
-    _SKIP_PATTERNS = (" ... ignored", " SKIPPED", " skipped", " ... skip")
-
     async def _gate_check(self, issue_id: int, worktree_path: str,
                           proposed_tests: list) -> tuple[bool, str, str]:
         """Symbolic gate: run test command, verify acceptance tests executed and passed."""
         test_cmd = self.config.get_test_command()
+        profile = None
         if not test_cmd:
             if not worktree_path:
                 return True, "no worktree, gate skipped", ""
-            try:
-                test_cmd = await self._detect_test_command(worktree_path)
-            except RuntimeError as e:
-                return False, str(e), ""
+            profile = detect_language(worktree_path)
+            if not profile:
+                return False, (
+                    f"Cannot detect test command for {worktree_path}. "
+                    f"Set build.test_command in config."), ""
+            test_cmd = profile.test_command
 
         passed, output = await self._run_command(test_cmd, cwd=worktree_path)
         if not passed:
@@ -168,12 +159,21 @@ class Engine:
         # Check for stray files
         try:
             untracked = await self._get_untracked_files(worktree_path)
-            stray = self._detect_stray_files(untracked)
+            if profile:
+                stray = [f for f in untracked
+                         if "/" not in f and any(f.endswith(ext) for ext in profile.source_extensions)]
+            else:
+                stray = [f for f in untracked
+                         if "/" not in f and f.endswith((".py", ".js", ".ts", ".rs", ".go"))]
             if stray:
                 warning = f"\nWARNING: Stray files in worktree root: {', '.join(stray)}\nRemove these or move them to a test directory."
                 output += warning
         except Exception:
-            pass  # best-effort
+            pass
+
+        # Determine patterns
+        pass_patterns = profile.pass_patterns if profile else (" ... ok", " PASSED", " passed", "PASS: ", " ✓")
+        skip_patterns = profile.skip_patterns if profile else (" ... ignored", " SKIPPED", " skipped", " ... skip")
 
         # Verify each acceptance test was actually executed and passed
         not_passed = []
@@ -182,15 +182,16 @@ class Engine:
             if name not in output:
                 not_passed.append(f"{name} (not found in output)")
                 continue
-            # Check if the test was skipped/ignored
-            if any(f"{name}{pat}" in output for pat in self._SKIP_PATTERNS):
+            if any(f"{name}{pat}" in output for pat in skip_patterns):
                 not_passed.append(f"{name} (skipped/ignored)")
                 continue
-            # Check if the test actually passed (heuristic)
-            if not any(f"{name}{pat}" in output for pat in self._PASS_PATTERNS):
-                # Name present but no pass indicator — run individually as fallback
-                individual_ok = await self._run_individual_test(
-                    worktree_path, name)
+            if not any(f"{name}{pat}" in output for pat in pass_patterns):
+                # Run individually as fallback
+                if profile:
+                    cmd = profile.individual_test_cmd.format(name=name)
+                    individual_ok, _ = await self._run_command(cmd, cwd=worktree_path)
+                else:
+                    individual_ok = False
                 if not individual_ok:
                     not_passed.append(f"{name} (failed individual run)")
 
@@ -208,27 +209,6 @@ class Engine:
         )
         stdout, _ = await proc.communicate()
         return [f for f in stdout.decode().strip().splitlines() if f]
-
-    def _detect_stray_files(self, untracked: list[str]) -> list[str]:
-        """Flag files in worktree root that look like temp/debug artifacts."""
-        return [f for f in untracked
-                if "/" not in f and f.endswith((".py", ".js", ".ts", ".rs", ".go"))]
-
-    async def _run_individual_test(self, worktree_path: str, test_name: str) -> bool:
-        """Run a single test with language-specific force-include flags."""
-        p = Path(worktree_path)
-        if (p / "Cargo.toml").exists():
-            cmd = f"cargo test {test_name} -- --include-ignored 2>&1"
-        elif (p / "go.mod").exists():
-            cmd = f"go test -run {test_name} -v ./... 2>&1"
-        elif (p / "pyproject.toml").exists() or (p / "setup.py").exists():
-            cmd = f"python -m pytest -k {test_name} -v 2>&1"
-        elif (p / "package.json").exists():
-            cmd = f"npx jest -t {test_name} 2>&1"
-        else:
-            return False  # can't determine how to run individually
-        passed, _ = await self._run_command(cmd, cwd=worktree_path)
-        return passed
 
     async def _get_code_diff(self, worktree_path: str) -> str:
         """Get git diff of all changes in the worktree."""
@@ -709,7 +689,7 @@ class Engine:
                 latest_review = self._get_latest_review(issue.id, review_section_key)
                 ctx_dict = {
                     "worktree_path": task.worktree_path,
-                    "gate_failure_summary": self._extract_gate_failure_summary(last_gate_output) if last_gate_output else "",
+                    "gate_failure_summary": self._extract_gate_failure_summary(last_gate_output, task.worktree_path) if last_gate_output else "",
                     "latest_review": latest_review,
                     "feedback_summary": self._format_feedback_for_agent(issue.id),
                     "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
