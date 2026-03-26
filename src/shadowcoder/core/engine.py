@@ -683,6 +683,25 @@ class Engine:
 
         proposed_tests = self._get_gate_tests(issue.id)
 
+        # Pre-gate: verify acceptance tests are NOT already passing.
+        # If they pass before any code changes, the criteria can't validate the fix.
+        if proposed_tests and task.worktree_path:
+            pre_passed, pre_reason, _ = await self._gate_check(
+                issue.id, task.worktree_path, proposed_tests)
+            if pre_passed:
+                self._log(issue.id,
+                    "Pre-gate 警告: acceptance tests already PASS before development. "
+                    "This means the criteria cannot verify your changes — "
+                    "the tests would pass even without a fix. "
+                    "Consider adding tests that reproduce the actual problem.")
+                await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+                    {"issue_id": issue.id, "status": "blocked", "round": 0}))
+                self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+                await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
+                    {"issue_id": issue.id, "task_id": task.id,
+                     "reason": "acceptance tests already pass — criteria too weak"}))
+                return
+
         try:
             gate_fail_count = 0
             conditional_pass_count = 0
