@@ -55,6 +55,20 @@ class StubAgent(BaseAgent):
         self._develop_fn = self._default_develop
         self._review_fn = self._default_review
 
+    # --- abstract method implementations (required by BaseAgent) ---
+
+    def _get_model(self) -> str:
+        return "stub-model"
+
+    def _get_permission_mode(self) -> str:
+        return "auto"
+
+    async def _run(self, prompt, *, cwd=None, system_prompt=None,
+                   session_id=None, resume_id=None):
+        from shadowcoder.agents.types import AgentUsage
+        # StubAgent overrides all action methods so _run is never called directly
+        return ("stub output", AgentUsage())
+
     # --- configurators ---
 
     def configure_preflight(self, fn):
