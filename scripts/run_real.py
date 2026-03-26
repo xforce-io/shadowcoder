@@ -12,6 +12,7 @@ Examples:
   python scripts/run_real.py ~/lab/coder-playground list
   python scripts/run_real.py ~/lab/coder-playground cleanup 1
   python scripts/run_real.py ~/lab/coder-playground cleanup 1 --delete-branch
+  python scripts/run_real.py ~/lab/coder-playground init
 """
 import asyncio
 import subprocess
@@ -47,6 +48,46 @@ def _validate_repo_path(repo_path: str) -> None:
         sys.exit(1)
 
 
+def _init_project(repo_path: str) -> None:
+    """Scaffold .shadowcoder directory structure for a new project."""
+    sc = Path(repo_path) / ".shadowcoder"
+    created = []
+
+    for d in ["issues", "worktrees", "roles"]:
+        p = sc / d
+        if not p.exists():
+            p.mkdir(parents=True)
+            created.append(str(p.relative_to(repo_path)))
+
+    config_file = sc / "config.yaml"
+    if not config_file.exists():
+        config_file.write_text("""\
+# Project-level shadowcoder config.
+# Overrides ~/.shadowcoder/config.yaml — only write what differs.
+# See: https://github.com/anthropics/shadowcoder#multi-model-support
+
+# Example: use codex for develop, claude for review
+# dispatch:
+#   design: codex
+#   develop: codex
+#   design_review: [opus]
+#   develop_review: [opus]
+""")
+        created.append(str(config_file.relative_to(repo_path)))
+
+    gitignore = sc / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text("worktrees/\n")
+        created.append(str(gitignore.relative_to(repo_path)))
+
+    if created:
+        print(f"Initialized .shadowcoder in {repo_path}")
+        for f in created:
+            print(f"  created {f}")
+    else:
+        print(f".shadowcoder already initialized in {repo_path}")
+
+
 async def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -56,6 +97,10 @@ async def main():
     _validate_repo_path(repo_path)
     command = sys.argv[2]
     args = sys.argv[3:]
+
+    if command == "init":
+        _init_project(repo_path)
+        return
 
     config = Config(repo_path=repo_path)
     bus = MessageBus()
