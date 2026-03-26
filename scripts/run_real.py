@@ -48,6 +48,24 @@ def _validate_repo_path(repo_path: str) -> None:
         sys.exit(1)
 
 
+def _seed_user_roles() -> list[str]:
+    """Copy default role instructions to ~/.shadowcoder/roles/ if missing."""
+    import shutil
+    seed_dir = Path(__file__).resolve().parent.parent / "data" / "roles"
+    user_roles = Path("~/.shadowcoder/roles").expanduser()
+    created = []
+    if not seed_dir.is_dir():
+        return created
+    for role_dir in sorted(seed_dir.iterdir()):
+        if not role_dir.is_dir():
+            continue
+        dest = user_roles / role_dir.name
+        if not dest.exists():
+            shutil.copytree(role_dir, dest)
+            created.append(f"~/.shadowcoder/roles/{role_dir.name}/")
+    return created
+
+
 def _init_project(repo_path: str) -> None:
     """Scaffold .shadowcoder directory structure for a new project."""
     sc = Path(repo_path) / ".shadowcoder"
@@ -80,10 +98,15 @@ def _init_project(repo_path: str) -> None:
         gitignore.write_text("worktrees/\n")
         created.append(str(gitignore.relative_to(repo_path)))
 
-    if created:
+    # Seed user-level default roles if missing
+    seeded = _seed_user_roles()
+
+    if created or seeded:
         print(f"Initialized .shadowcoder in {repo_path}")
         for f in created:
             print(f"  created {f}")
+        for f in seeded:
+            print(f"  seeded  {f}")
     else:
         print(f".shadowcoder already initialized in {repo_path}")
 

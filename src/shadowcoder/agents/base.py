@@ -14,9 +14,6 @@ from shadowcoder.agents.types import (
 
 logger = logging.getLogger(__name__)
 
-# Built-in roles directory (shipped with the package)
-_BUILTIN_ROLES_DIR = Path(__file__).resolve().parent.parent / "roles"
-
 # Map severity strings to enum
 _SEVERITY_MAP = {
     "critical": Severity.CRITICAL,
@@ -78,24 +75,19 @@ class BaseAgent(ABC):
         Search order:
         1. <project>/.shadowcoder/roles/<role>/*.md  (project-level)
         2. ~/.shadowcoder/roles/<role>/*.md           (user-level)
-        3. <package>/roles/<role>/*.md                 (built-in default)
 
         Within each directory, all .md files are sorted by name and concatenated.
         The first directory that contains any .md files wins (no merging across levels).
         """
-        roles_dirs = self.config.get("_roles_dirs", [])
-        search_dirs = [Path(d) / role for d in roles_dirs]
-        search_dirs.append(_BUILTIN_ROLES_DIR / role)
-
-        for role_dir in search_dirs:
+        for d in self.config.get("_roles_dirs", []):
+            role_dir = Path(d) / role
             if not role_dir.is_dir():
                 continue
             md_files = sorted(role_dir.glob("*.md"))
             if md_files:
-                parts = []
-                for f in md_files:
-                    parts.append(f.read_text(encoding="utf-8").strip())
-                return "\n\n".join(parts)
+                return "\n\n".join(
+                    f.read_text(encoding="utf-8").strip() for f in md_files
+                )
 
         return ""
 

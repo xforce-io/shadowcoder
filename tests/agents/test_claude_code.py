@@ -1,14 +1,18 @@
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from shadowcoder.agents.claude_code import ClaudeCodeAgent
 from shadowcoder.agents.types import AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, Severity
 from shadowcoder.core.models import Issue, IssueStatus
 from datetime import datetime
 
+# data/roles/ in the repo — seed roles used by tests
+_DATA_ROLES_DIR = str(Path(__file__).resolve().parent.parent.parent / "data" / "roles")
+
 
 @pytest.fixture
 def agent():
-    return ClaudeCodeAgent({"type": "claude_code"})
+    return ClaudeCodeAgent({"type": "claude_code", "_roles_dirs": [_DATA_ROLES_DIR]})
 
 
 @pytest.fixture
@@ -118,11 +122,11 @@ async def test_review_with_code_diff_uses_diff_context(agent, sample_request):
 # --- System prompt loading tests ---
 
 
-def test_load_system_prompt_from_builtin(agent):
-    """Built-in instructions.md files are loaded for all roles."""
+def test_load_system_prompt_from_data_roles(agent):
+    """data/roles/ instructions.md files are loaded for all roles."""
     for role in ("designer", "design_reviewer", "developer", "code_reviewer", "preflight"):
         prompt = agent._load_system_prompt(role)
-        assert len(prompt) > 0, f"No built-in prompt for {role}"
+        assert len(prompt) > 0, f"No prompt found for {role}"
 
 
 def test_load_system_prompt_unknown_role(agent):
@@ -158,7 +162,7 @@ async def test_design_prompt_loads_from_file(agent, sample_request):
         return_value=("Design doc", _make_usage()))
     await agent.design(sample_request)
     system_prompt = agent._run.call_args[1].get("system_prompt", "")
-    # Check content from built-in designer/instructions.md
+    # Check content from designer/instructions.md
     assert "资深系统架构师" in system_prompt
     assert "test_command" in system_prompt
 
