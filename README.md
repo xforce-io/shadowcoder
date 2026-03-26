@@ -13,17 +13,31 @@ Point it at a repo. Give it a task. It codes until it works.
 
 ## Quick Start
 
+### Option 1 — Via Claude Code / Codex (easiest)
+
+Open Claude Code (or Codex) in the ShadowCoder directory and describe your task:
+
+> Use ShadowCoder to implement a REST API with JWT auth and SQLite storage in ~/dev/github/my-api. Here are the requirements: ...
+
+> Run ShadowCoder on ~/dev/github/my-project for this issue: https://github.com/owner/repo/issues/42
+
+> Use ShadowCoder to build a Gomoku AI in Rust in ~/dev/github/gomoku. Requirements file: ~/specs/gomoku.md
+
+Just provide the **target repo path** and **what to build** (inline description, requirements file, or GitHub issue URL). The agent figures out the rest.
+
+### Option 2 — CLI
+
 ```bash
 pip install -e ".[dev]"
 
-# Run — no config needed if you have Claude Code CLI installed
+# From a requirements file
 python scripts/run_real.py /path/to/repo run "Add user authentication" --from requirements.md
 
-# Or point it at a GitHub issue
+# From a GitHub issue
 python scripts/run_real.py /path/to/repo run --from https://github.com/owner/repo/issues/42
 ```
 
-That's it. ShadowCoder creates a design, writes the code in an isolated worktree, runs tests, reviews the output, and iterates until everything passes.
+Either way, ShadowCoder creates a design, writes code in an isolated worktree, runs tests, reviews the output, and iterates until everything passes.
 
 ## What It Does
 

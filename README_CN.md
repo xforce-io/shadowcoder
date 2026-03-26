@@ -13,17 +13,31 @@
 
 ## 快速开始
 
+### 方式 1 — 通过 Claude Code / Codex（最简单）
+
+在 ShadowCoder 目录下打开 Claude Code（或 Codex），直接描述任务：
+
+> 用 ShadowCoder 在 ~/dev/github/my-api 实现一个 REST API，要求 JWT 认证、SQLite 存储。需求如下：...
+
+> 用 ShadowCoder 处理 ~/dev/github/my-project 的这个 issue：https://github.com/owner/repo/issues/42
+
+> 用 ShadowCoder 在 ~/dev/github/gomoku 构建一个 Rust 五子棋 AI，需求文件：~/specs/gomoku.md
+
+只需提供**目标仓库路径**和**要做什么**（直接描述、需求文件或 GitHub issue URL），剩下的交给 agent。
+
+### 方式 2 — 命令行
+
 ```bash
 pip install -e ".[dev]"
 
-# 运行 — 已安装 Claude Code CLI 即可，无需配置
+# 从需求文件
 python scripts/run_real.py /path/to/repo run "添加用户认证" --from requirements.md
 
-# 或直接指向 GitHub issue
+# 从 GitHub issue
 python scripts/run_real.py /path/to/repo run --from https://github.com/owner/repo/issues/42
 ```
 
-就这样。ShadowCoder 会创建设计、在隔离的 worktree 中编写代码、运行测试、评审输出，然后迭代直到全部通过。
+无论哪种方式，ShadowCoder 都会创建设计、在隔离的 worktree 中编写代码、运行测试、评审输出，然后迭代直到全部通过。
 
 ## 工作流程
 
