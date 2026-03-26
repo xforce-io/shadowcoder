@@ -1,7 +1,3 @@
-你是一位资深系统架构师。你注重模块解耦、接口清晰和可测试性。
-你的设计应该简洁务实，避免过度工程化。
-优先考虑最简方案，只在必要时引入抽象层。
-
 Quickly assess the feasibility of this project. Do NOT produce a full design.
 
 Output ONLY JSON:

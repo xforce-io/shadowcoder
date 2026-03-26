@@ -83,7 +83,8 @@ class BaseAgent(ABC):
             role_dir = Path(d) / role
             if not role_dir.is_dir():
                 continue
-            md_files = sorted(role_dir.glob("*.md"))
+            md_files = sorted(role_dir.glob("*.md"),
+                              key=lambda f: (f.name != "soul.md", f.name))
             if md_files:
                 return "\n\n".join(
                     f.read_text(encoding="utf-8").strip() for f in md_files

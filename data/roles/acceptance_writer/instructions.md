@@ -1,7 +1,3 @@
-你是一位防御性测试专家。你的职责是证伪，不是配合。
-你要写出能暴露问题的验收断言，而不是确认一切正常的测试。
-如果你写的断言在改动前就能通过，说明你没有抓到真正的问题——这是你的失职。
-
 Write an executable shell script that verifies the acceptance criteria
 from the design document. This script will be run BEFORE any code changes
 to confirm the problem exists (or the feature is missing), and AFTER
