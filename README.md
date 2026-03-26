@@ -42,16 +42,19 @@ Either way, ShadowCoder creates a design, writes code in an isolated worktree, r
 ## What It Does
 
 ```
-create → preflight → design ⇄ review → develop ⇄ gate ⇄ review → done
-                                            ↑       │
-                                            └───────┘
-                                         fail: retry develop
+create → preflight → design ⇄ review → acceptance → develop ⇄ gate ⇄ review → done
+                                            ↑          │          ↑       │
+                                            │          ↓          └───────┘
+                                            │     must fail on      fail: retry develop
+                                            │     current code
+                                            └──────────────────────────────┘
 ```
 
 - **Preflight**: Quick feasibility check. Low feasibility blocks early.
 - **Design**: Agent produces architecture doc. Reviewer evaluates it.
-- **Develop**: Agent writes code in an isolated git worktree.
-- **Gate**: Engine independently runs tests (`cargo test`, `pytest`, `go test`) and verifies acceptance tests passed. Gate failure routes back to develop.
+- **Acceptance**: Agent writes a bash test script that must FAIL on current code and PASS after implementation. Red-green verification.
+- **Develop**: Agent writes code in an isolated git worktree. Session resume allows stateful multi-turn refinement.
+- **Gate**: Engine independently runs tests (`cargo test`, `pytest`, `go test`) and the acceptance script. Gate failure routes back to develop; 2 consecutive failures escalate to reviewer.
 - **Review**: Reviewer evaluates code diff. Pass → done.
 
 Review severity counts are the loss signal — they decrease over rounds:
@@ -117,7 +120,7 @@ models:
 
 agents:
   claude-coder:
-    type: claude_code
+    type: claude_code    # or "codex" for OpenAI Codex CLI
     model: sonnet
   fast-coder:
     type: claude_code
@@ -126,17 +129,21 @@ agents:
 dispatch:
   design: fast-coder
   develop: fast-coder
+  acceptance: fast-coder          # optional, falls back to develop agent
   design_review: [claude-coder]
   develop_review: [claude-coder]
 
 review_policy:
-  pass_threshold: no_high_or_critical
+  pass_threshold: no_high_or_critical   # or "no_critical" (lenient)
   max_review_rounds: 5
   max_test_retries: 3
   # max_budget_usd: 10.0
+
+# build:
+#   test_command: "cargo test 2>&1"   # auto-detected if omitted
 ```
 
-Mix agents freely: one for develop, another for review.
+Mix agents freely: one for develop, another for review. Agent types: `claude_code` (Claude CLI) and `codex` (OpenAI Codex CLI).
 
 ## Usage
 
@@ -154,6 +161,10 @@ python scripts/run_real.py /path/to/repo run
 python scripts/run_real.py /path/to/repo design 1
 python scripts/run_real.py /path/to/repo develop 1
 
+# Iterate on a DONE issue — append new requirements and re-enter develop
+python scripts/run_real.py /path/to/repo iterate 1 "Add pagination support"
+python scripts/run_real.py /path/to/repo iterate 1 --from new-requirements.md
+
 # Human-in-the-loop controls
 python scripts/run_real.py /path/to/repo approve 1    # approve blocked issue
 python scripts/run_real.py /path/to/repo resume 1     # retry from blocked
@@ -163,7 +174,8 @@ python scripts/run_real.py /path/to/repo cancel 1
 python scripts/run_real.py /path/to/repo list
 python scripts/run_real.py /path/to/repo info 1
 
-# Cleanup
+# Setup & cleanup
+python scripts/run_real.py /path/to/repo init              # scaffold .shadowcoder/ directory
 python scripts/run_real.py /path/to/repo cleanup 1
 python scripts/run_real.py /path/to/repo cleanup 1 --delete-branch
 ```
@@ -203,13 +215,16 @@ src/shadowcoder/
     issue_store.py     # Issue files, logs, version archives
     models.py          # States, transitions
     config.py          # Typed config with zero-config defaults
+    language.py        # Language detection and test profiles
     task_manager.py    # Runtime tasks
     worktree.py        # Git worktree lifecycle
   agents/
     types.py           # Structured output types
-    base.py            # Abstract interface + helpers
-    claude_code.py     # Claude Code CLI implementation
+    base.py            # Abstract interface + prompt assembly
+    claude_code.py     # Claude Code CLI transport
+    codex.py           # OpenAI Codex CLI transport
     registry.py        # Agent discovery
+  data/roles/          # Default role prompts (soul.md + instructions.md per role)
 ```
 
 ### Agent Abstraction
@@ -220,33 +235,37 @@ class BaseAgent(ABC):
     async def design(self, request) -> DesignOutput
     async def develop(self, request) -> DevelopOutput
     async def review(self, request) -> ReviewOutput
+    async def write_acceptance_script(self, request) -> AcceptanceOutput
 ```
 
-Testing is handled by the Engine's gate — not the agent. Adding a new agent means implementing these four methods.
+Testing is handled by the Engine's gate — not the agent. Prompt assembly and output parsing live in BaseAgent; subclasses only implement the CLI transport (`_run`). Role prompts are loaded from `data/roles/<role>/` (soul.md + instructions.md), customizable per-project or per-user.
 
 ### Audit Trail
 
 ```
 .shadowcoder/issues/
-  0001.md          # Current state (requirements, design, implementation, test results)
-  0001.log         # Chronological timeline — every action timestamped
-  0001.versions/   # Archived outputs — design_r1.md, design_r2.md, develop_r1.md, ...
+  0001.md              # Current state (requirements, design, implementation, test results)
+  0001.log             # Chronological timeline — every action timestamped
+  0001.feedback.json   # Feedback state: items, proposed tests, escalation tracking
+  0001.acceptance.sh   # Generated acceptance test script (red-green verified)
+  0001.versions/       # Archived outputs — design_r1.md, design_r2.md, develop_r1.md, ...
 ```
 
 The log is append-only. Nothing is lost.
 
 ## Known Limitations
 
-- **Cost tracking incomplete**: Token counts and costs not reliably extracted from Claude CLI responses.
+- **Cost tracking incomplete**: Token counts and costs not reliably extracted from all CLI responses (Codex provides no cost data).
 - **No graceful stop**: Killing a running agent requires `pkill`.
-- **No checkpoint/resume**: Interrupted develop sessions don't auto-recover from partial progress.
 - **Single repo per process**: Use separate processes for concurrent work on the same repo.
+- **Codex session resume**: Codex CLI does not support session resume; each round starts fresh.
 
 ## Roadmap
 
 - **Context compression**: Structured summaries (via fast model) to replace head+tail truncation.
 - **Prompt audit**: Auto-evaluate context efficiency after each run.
 - **Parallel issues**: Concurrent issue execution with proper locking.
+- **Language profiles**: Abstract language-specific logic (test commands, error patterns) into pluggable profiles.
 
 ## License
 

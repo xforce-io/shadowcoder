@@ -42,16 +42,19 @@ python scripts/run_real.py /path/to/repo run --from https://github.com/owner/rep
 ## 工作流程
 
 ```
-create → preflight → design ⇄ review → develop ⇄ gate ⇄ review → done
-                                            ↑       │
-                                            └───────┘
-                                         失败：重试 develop
+create → preflight → design ⇄ review → acceptance → develop ⇄ gate ⇄ review → done
+                                            ↑          │          ↑       │
+                                            │          ↓          └───────┘
+                                            │     必须在当前        失败：重试 develop
+                                            │     代码上失败
+                                            └──────────────────────────────┘
 ```
 
 - **Preflight**：快速可行性评估，低可行性直接阻塞。
 - **Design**：Agent 生成架构文档，Reviewer 评审。
-- **Develop**：Agent 在隔离的 git worktree 中编写代码。
-- **Gate**：Engine 独立运行测试（`cargo test`、`pytest`、`go test`），验证验收测试通过。失败回退到 develop。
+- **Acceptance**：Agent 编写 bash 测试脚本，必须在当前代码上失败、实现后通过。红绿验证。
+- **Develop**：Agent 在隔离的 git worktree 中编写代码。支持会话恢复，实现有状态的多轮迭代。
+- **Gate**：Engine 独立运行测试（`cargo test`、`pytest`、`go test`）和验收脚本。失败回退到 develop；连续 2 次失败升级给 Reviewer。
 - **Review**：Reviewer 评审代码 diff。通过 → 完成。
 
 评审严重度计数是损失信号，随轮次递减：
@@ -117,7 +120,7 @@ models:
 
 agents:
   claude-coder:
-    type: claude_code
+    type: claude_code    # 或 "codex"（OpenAI Codex CLI）
     model: sonnet
   fast-coder:
     type: claude_code
@@ -126,17 +129,21 @@ agents:
 dispatch:
   design: fast-coder
   develop: fast-coder
+  acceptance: fast-coder          # 可选，默认使用 develop agent
   design_review: [claude-coder]
   develop_review: [claude-coder]
 
 review_policy:
-  pass_threshold: no_high_or_critical
+  pass_threshold: no_high_or_critical   # 或 "no_critical"（宽松）
   max_review_rounds: 5
   max_test_retries: 3
   # max_budget_usd: 10.0
+
+# build:
+#   test_command: "cargo test 2>&1"   # 不配置则自动检测
 ```
 
-自由混合 Agent：一个负责开发，另一个负责评审。
+自由混合 Agent：一个负责开发，另一个负责评审。Agent 类型：`claude_code`（Claude CLI）和 `codex`（OpenAI Codex CLI）。
 
 ## 使用方法
 
@@ -154,6 +161,10 @@ python scripts/run_real.py /path/to/repo run
 python scripts/run_real.py /path/to/repo design 1
 python scripts/run_real.py /path/to/repo develop 1
 
+# 对已完成的 issue 追加需求，重新进入 develop
+python scripts/run_real.py /path/to/repo iterate 1 "添加分页支持"
+python scripts/run_real.py /path/to/repo iterate 1 --from new-requirements.md
+
 # 人工介入控制
 python scripts/run_real.py /path/to/repo approve 1    # 批准阻塞的 issue
 python scripts/run_real.py /path/to/repo resume 1     # 从阻塞处重试
@@ -163,7 +174,8 @@ python scripts/run_real.py /path/to/repo cancel 1
 python scripts/run_real.py /path/to/repo list
 python scripts/run_real.py /path/to/repo info 1
 
-# 清理
+# 初始化与清理
+python scripts/run_real.py /path/to/repo init              # 创建 .shadowcoder/ 目录结构
 python scripts/run_real.py /path/to/repo cleanup 1
 python scripts/run_real.py /path/to/repo cleanup 1 --delete-branch
 ```
@@ -203,13 +215,16 @@ src/shadowcoder/
     issue_store.py     # Issue 文件、日志、版本归档
     models.py          # 状态、转换
     config.py          # 类型化配置，支持零配置
+    language.py        # 语言检测与测试配置
     task_manager.py    # 运行时任务
     worktree.py        # Git worktree 生命周期
   agents/
     types.py           # 结构化输出类型
-    base.py            # 抽象接口 + 辅助方法
-    claude_code.py     # Claude Code CLI 实现
+    base.py            # 抽象接口 + Prompt 组装
+    claude_code.py     # Claude Code CLI 传输层
+    codex.py           # OpenAI Codex CLI 传输层
     registry.py        # Agent 发现
+  data/roles/          # 默认角色提示词（每个角色 soul.md + instructions.md）
 ```
 
 ### Agent 抽象
@@ -220,33 +235,37 @@ class BaseAgent(ABC):
     async def design(self, request) -> DesignOutput
     async def develop(self, request) -> DevelopOutput
     async def review(self, request) -> ReviewOutput
+    async def write_acceptance_script(self, request) -> AcceptanceOutput
 ```
 
-测试由 Engine 的 gate 处理——不是 Agent。添加新 Agent 只需实现这四个方法。
+测试由 Engine 的 gate 处理——不是 Agent。Prompt 组装和输出解析在 BaseAgent 中完成；子类只需实现 CLI 传输层（`_run`）。角色提示词从 `data/roles/<role>/`（soul.md + instructions.md）加载，支持项目级和用户级自定义。
 
 ### 审计追踪
 
 ```
 .shadowcoder/issues/
-  0001.md          # 当前状态（需求、设计、实现、测试结果）
-  0001.log         # 按时间顺序的时间线——每个操作带时间戳
-  0001.versions/   # 归档输出——design_r1.md, design_r2.md, develop_r1.md, ...
+  0001.md              # 当前状态（需求、设计、实现、测试结果）
+  0001.log             # 按时间顺序的时间线——每个操作带时间戳
+  0001.feedback.json   # 反馈状态：条目、提议测试、升级追踪
+  0001.acceptance.sh   # 生成的验收测试脚本（经红绿验证）
+  0001.versions/       # 归档输出——design_r1.md, design_r2.md, develop_r1.md, ...
 ```
 
 日志仅追加，不丢失任何信息。
 
 ## 已知限制
 
-- **成本追踪不完整**：无法可靠从 Claude CLI 响应中提取 token 计数和成本。
+- **成本追踪不完整**：并非所有 CLI 响应都能可靠提取 token 计数和成本（Codex 不提供成本数据）。
 - **无优雅停止**：终止运行中的 Agent 需要 `pkill`。
-- **无断点续传**：中断的 develop 会话无法从部分进度自动恢复。
 - **单 repo 单进程**：同一 repo 并发工作需使用不同进程。
+- **Codex 会话恢复**：Codex CLI 不支持会话恢复；每轮从头开始。
 
 ## 路线图
 
 - **上下文压缩**：用快速模型结构化摘要替代 head+tail 截断。
 - **Prompt 审计**：每次运行后自动评估上下文效率。
 - **并行 issue**：支持并发执行，带适当锁机制。
+- **语言配置**：将语言相关逻辑（测试命令、错误模式）抽象为可插拔的 profile。
 
 ## 许可证
 
