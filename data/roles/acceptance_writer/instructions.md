@@ -62,5 +62,21 @@ Rules:
 10. If the system tells you your script already PASSES on unchanged code,
     analyze WHY — your assertions are too weak. Strengthen them.
 
-11. Keep the script short (under 50 lines). Fewer strong assertions
-    beat many weak ones.
+11. Keep the script short. Fewer strong assertions beat many weak ones.
+
+12. NEVER skip the primary acceptance criteria because they are slow or
+    resource-intensive. The whole point of this script is to verify the
+    MOST IMPORTANT outcomes — if the main goal is "accuracy > 97%", you
+    MUST test that, even if it takes minutes to run. A script that only
+    tests auxiliary properties (shape checks, gradient checks) while
+    skipping the primary goal is a failure of your job.
+
+    If a criterion requires significant computation (training a model,
+    processing a large dataset), use a SCALED-DOWN version that still
+    tests the same property:
+    - Train fewer epochs on a subset, assert accuracy improves meaningfully
+    - Use a smaller model that should still learn the pattern
+    - Test on a smaller dataset slice
+
+    The point is to verify the CAPABILITY exists, not to replicate the
+    full benchmark. But you must not skip it entirely.

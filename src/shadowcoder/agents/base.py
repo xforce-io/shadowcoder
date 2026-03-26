@@ -147,11 +147,12 @@ class BaseAgent(ABC):
         """Build context for code review, including git diff."""
         issue = request.issue
         parts = [f"Issue: {issue.title} (#{issue.id})"]
-        # Include requirements
-        for section_name in ["需求", "设计"]:
-            content = issue.sections.get(section_name, "")
-            if content:
-                parts.append(f"\n--- {section_name} ---\n{content}")
+        # Include requirements only — NOT the design document.
+        # Passing the design doc causes reviewers to critique the doc
+        # instead of focusing on code correctness.
+        req_content = issue.sections.get("需求", "")
+        if req_content:
+            parts.append(f"\n--- 需求 ---\n{req_content}")
         # Include code diff if available
         code_diff = request.context.get("code_diff", "")
         if code_diff:
