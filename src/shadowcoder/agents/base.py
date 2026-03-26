@@ -14,6 +14,10 @@ from shadowcoder.agents.types import (
 
 logger = logging.getLogger(__name__)
 
+# Context size limits (characters)
+MAX_CODE_DIFF_CHARS = 30_000
+MAX_DESIGN_SUMMARY_CHARS = 1_500
+
 # Map severity strings to enum
 _SEVERITY_MAP = {
     "critical": Severity.CRITICAL,
@@ -132,7 +136,7 @@ class BaseAgent(ABC):
         # Add code diff if available
         code_diff = request.context.get("code_diff", "")
         if code_diff:
-            parts.append(f"\n--- Code Diff ---\n{code_diff[:30000]}")  # cap at 30K chars
+            parts.append(f"\n--- Code Diff ---\n{code_diff[:MAX_CODE_DIFF_CHARS]}")
         # Add gate output for developer to diagnose test failures
         gate_output = request.context.get("gate_output", "")
         if gate_output:
@@ -147,12 +151,22 @@ class BaseAgent(ABC):
         """Build context for code review, including git diff."""
         issue = request.issue
         parts = [f"Issue: {issue.title} (#{issue.id})"]
-        # Include requirements only — NOT the design document.
-        # Passing the design doc causes reviewers to critique the doc
-        # instead of focusing on code correctness.
+        # Include requirements
         req_content = issue.sections.get("需求", "")
         if req_content:
             parts.append(f"\n--- 需求 ---\n{req_content}")
+        # Include design as REFERENCE ONLY — truncated to key decisions.
+        # Full design doc causes reviewers to critique the doc wording
+        # instead of focusing on code correctness.
+        design_content = issue.sections.get("设计", "")
+        if design_content:
+            truncated = design_content[:MAX_DESIGN_SUMMARY_CHARS]
+            if len(design_content) > MAX_DESIGN_SUMMARY_CHARS:
+                truncated += "\n... (design truncated — review the CODE, not this document)"
+            parts.append(
+                f"\n--- 设计概要 (reference only — do NOT review this document) ---\n"
+                f"{truncated}"
+            )
         # Include code diff if available
         code_diff = request.context.get("code_diff", "")
         if code_diff:
