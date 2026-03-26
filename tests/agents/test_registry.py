@@ -6,17 +6,22 @@ from shadowcoder.core.config import Config
 
 
 class FakeAgent(BaseAgent):
-    async def preflight(self, request):
-        return PreflightOutput(feasibility="high", estimated_complexity="moderate")
+    """Minimal concrete agent for registry tests.
 
-    async def design(self, request):
-        return DesignOutput(document="ok")
+    Action methods (preflight/design/develop/review) are now concrete in
+    BaseAgent, so FakeAgent only needs to implement the three abstract methods.
+    """
 
-    async def develop(self, request):
-        return DevelopOutput(summary="ok")
+    def _get_model(self) -> str:
+        return "fake-model"
 
-    async def review(self, request):
-        return ReviewOutput(comments=[], reviewer="fake")
+    def _get_permission_mode(self) -> str:
+        return "auto"
+
+    async def _run(self, prompt, *, cwd=None, system_prompt=None,
+                   session_id=None, resume_id=None):
+        from shadowcoder.agents.types import AgentUsage
+        return ("fake output", AgentUsage())
 
 
 def test_register_and_get(tmp_config):

@@ -39,6 +39,20 @@ class E2EAgent(BaseAgent):
         self._review_fail_count = n
         self._review_call_counter = 0
 
+    # --- abstract method implementations (required by BaseAgent) ---
+
+    def _get_model(self) -> str:
+        return "e2e-model"
+
+    def _get_permission_mode(self) -> str:
+        return "auto"
+
+    async def _run(self, prompt, *, cwd=None, system_prompt=None,
+                   session_id=None, resume_id=None):
+        from shadowcoder.agents.types import AgentUsage
+        # E2EAgent overrides all action methods so _run is never called directly
+        return ("e2e output", AgentUsage())
+
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
         return PreflightOutput(feasibility="high", estimated_complexity="moderate")
 

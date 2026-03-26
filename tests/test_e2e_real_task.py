@@ -446,6 +446,19 @@ class RealisticAgent(BaseAgent):
         self._review_design_round = 0
         self._review_develop_round = 0
 
+    # --- abstract method implementations (required by BaseAgent) ---
+
+    def _get_model(self) -> str:
+        return "realistic-model"
+
+    def _get_permission_mode(self) -> str:
+        return "auto"
+
+    async def _run(self, prompt, *, cwd=None, system_prompt=None,
+                   session_id=None, resume_id=None):
+        from shadowcoder.agents.types import AgentUsage
+        return ("realistic output", AgentUsage())
+
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
         return PreflightOutput(feasibility="high", estimated_complexity="moderate")
 

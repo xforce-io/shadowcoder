@@ -615,6 +615,19 @@ class StateDrivenAgent(BaseAgent):
         self.execute_log: list[str] = []
         self.review_log: list[str] = []
 
+    # --- abstract method implementations (required by BaseAgent) ---
+
+    def _get_model(self) -> str:
+        return "state-driven-model"
+
+    def _get_permission_mode(self) -> str:
+        return "auto"
+
+    async def _run(self, prompt, *, cwd=None, system_prompt=None,
+                   session_id=None, resume_id=None):
+        from shadowcoder.agents.types import AgentUsage
+        return ("state-driven output", AgentUsage())
+
     def _parse_requirements(self, req_text: str) -> set[str]:
         """Extract which features are required based on keywords in requirements."""
         required = set()
