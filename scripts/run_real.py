@@ -57,7 +57,7 @@ async def main():
     command = sys.argv[2]
     args = sys.argv[3:]
 
-    config = Config()
+    config = Config(repo_path=repo_path)
     bus = MessageBus()
     wt_manager = WorktreeManager(config.get_worktree_dir())
     task_manager = TaskManager(wt_manager)

@@ -6,14 +6,32 @@ import yaml
 
 
 class Config:
-    def __init__(self, path: str = "~/.shadowcoder/config.yaml"):
+    def __init__(self, path: str = "~/.shadowcoder/config.yaml",
+                 repo_path: str | None = None):
         resolved = Path(path).expanduser()
         if not resolved.exists():
             self._data: dict = self._default_data()
         else:
             with open(resolved) as f:
                 self._data = yaml.safe_load(f) or {}
+
+        if repo_path:
+            project_conf = Path(repo_path) / ".shadowcoder" / "config.yaml"
+            if project_conf.exists():
+                with open(project_conf) as f:
+                    overrides = yaml.safe_load(f) or {}
+                self._apply_overrides(overrides)
+
+        if resolved.exists() or repo_path:
             self._validate()
+
+    def _apply_overrides(self, overrides: dict) -> None:
+        """Merge project-level config on top of global config (section-level)."""
+        for section, value in overrides.items():
+            if isinstance(value, dict) and isinstance(self._data.get(section), dict):
+                self._data[section].update(value)
+            else:
+                self._data[section] = value
 
     @staticmethod
     def _default_data() -> dict:

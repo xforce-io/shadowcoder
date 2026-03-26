@@ -181,3 +181,69 @@ def test_max_budget_set(tmp_path):
     p.write_text("clouds: {}\nmodels: {}\nagents:\n  a:\n    type: x\nreview_policy:\n  max_budget_usd: 2.50\n")
     config = Config(str(p))
     assert config.get_max_budget_usd() == 2.50
+
+
+# --- Project-level config override tests ---
+
+
+def test_project_config_overrides_dispatch(tmp_path):
+    """Project .shadowcoder/config.yaml overrides dispatch section."""
+    global_conf = tmp_path / "global.yaml"
+    global_conf.write_text(NEW_CONFIG)
+
+    repo = tmp_path / "repo"
+    sc = repo / ".shadowcoder"
+    sc.mkdir(parents=True)
+    (sc / "config.yaml").write_text("dispatch:\n  design: quality-reviewer\n")
+
+    config = Config(str(global_conf), repo_path=str(repo))
+    assert config.get_agent_for_phase("design") == "quality-reviewer"
+    # develop still from global
+    assert config.get_agent_for_phase("develop") == "fast-coder"
+
+
+def test_project_config_adds_agents(tmp_path):
+    """Project config can add new agents that merge with global agents."""
+    global_conf = tmp_path / "global.yaml"
+    global_conf.write_text(NEW_CONFIG)
+
+    repo = tmp_path / "repo"
+    sc = repo / ".shadowcoder"
+    sc.mkdir(parents=True)
+    (sc / "config.yaml").write_text(
+        "agents:\n  codex-coder:\n    type: codex\n    model: sonnet\n"
+        "dispatch:\n  develop: codex-coder\n")
+
+    config = Config(str(global_conf), repo_path=str(repo))
+    assert config.get_agent_for_phase("develop") == "codex-coder"
+    # global agents still exist
+    ac = config.get_agent_config("fast-coder")
+    assert ac["type"] == "claude_code"
+
+
+def test_project_config_no_file(tmp_path):
+    """No project config file → same as global."""
+    global_conf = tmp_path / "global.yaml"
+    global_conf.write_text(NEW_CONFIG)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    config = Config(str(global_conf), repo_path=str(repo))
+    assert config.get_agent_for_phase("design") == "fast-coder"
+
+
+def test_project_config_overrides_review_policy(tmp_path):
+    """Project config can override review_policy."""
+    global_conf = tmp_path / "global.yaml"
+    global_conf.write_text(NEW_CONFIG)
+
+    repo = tmp_path / "repo"
+    sc = repo / ".shadowcoder"
+    sc.mkdir(parents=True)
+    (sc / "config.yaml").write_text("review_policy:\n  max_review_rounds: 5\n")
+
+    config = Config(str(global_conf), repo_path=str(repo))
+    assert config.get_max_review_rounds() == 5
+    # pass_threshold still from global
+    assert config.get_pass_threshold() == "no_high_or_critical"
