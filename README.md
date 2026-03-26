@@ -42,18 +42,14 @@ Either way, ShadowCoder creates a design, writes code in an isolated worktree, r
 ## What It Does
 
 ```
-create → preflight → design ⇄ review → acceptance → develop ⇄ gate ⇄ review → done
-                                            ↑          │          ↑       │
-                                            │          ↓          └───────┘
-                                            │     must fail on      fail: retry develop
-                                            │     current code
-                                            └──────────────────────────────┘
+create → design ⇄ review → develop ⇄ gate ⇄ review → done
+           │                  │         ↑       │
+       preflight          acceptance    └───────┘
+     (feasibility)       (red-green)   fail: retry develop
 ```
 
-- **Preflight**: Quick feasibility check. Low feasibility blocks early.
-- **Design**: Agent produces architecture doc. Reviewer evaluates it.
-- **Acceptance**: Agent writes a bash test script that must FAIL on current code and PASS after implementation. Red-green verification.
-- **Develop**: Agent writes code in an isolated git worktree. Session resume allows stateful multi-turn refinement.
+- **Design** (includes **preflight**): Agent produces architecture doc. Reviewer evaluates it. On first entry, a preflight feasibility check runs — low feasibility blocks early.
+- **Develop** (includes **acceptance**): Agent writes code in an isolated git worktree. On first entry, an acceptance script is generated that must FAIL on current code (red-green verification). Session resume allows stateful multi-turn refinement.
 - **Gate**: Engine independently runs tests (`cargo test`, `pytest`, `go test`) and the acceptance script. Gate failure routes back to develop; 2 consecutive failures escalate to reviewer.
 - **Review**: Reviewer evaluates code diff. Pass → done.
 

@@ -80,11 +80,15 @@ python scripts/run_real.py ~/dev/github/<name> cleanup 1 --delete-branch
 ## Architecture
 
 ```
-Engine._run_design_cycle:  preflight → design → review → retry or approved
-Engine._run_develop_cycle: acceptance_script → develop → gate → review → retry or done
-                                                  ↑        │
-                                                  └────────┘  (gate fail → retry develop)
-                                                  (2 consecutive fails → escalate to reviewer)
+Engine._run_design_cycle:  [preflight] → design → review → retry or approved
+Engine._run_develop_cycle: [acceptance] → develop → gate → review → retry or done
+                                            ↑        │
+                                            └────────┘  (gate fail → retry develop)
+                                            (2 consecutive fails → escalate to reviewer)
+
+States: CREATED → DESIGNING ⇄ DESIGN_REVIEW → APPROVED → DEVELOPING ⇄ DEV_REVIEW → DONE
+        Any state → BLOCKED (human intervention) / FAILED / CANCELLED
+        DONE → APPROVED (via iterate)
 ```
 
 Key files:

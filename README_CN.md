@@ -42,18 +42,14 @@ python scripts/run_real.py /path/to/repo run --from https://github.com/owner/rep
 ## 工作流程
 
 ```
-create → preflight → design ⇄ review → acceptance → develop ⇄ gate ⇄ review → done
-                                            ↑          │          ↑       │
-                                            │          ↓          └───────┘
-                                            │     必须在当前        失败：重试 develop
-                                            │     代码上失败
-                                            └──────────────────────────────┘
+create → design ⇄ review → develop ⇄ gate ⇄ review → done
+           │                  │         ↑       │
+       preflight          acceptance    └───────┘
+      （可行性评估）       （红绿验证）   失败：重试 develop
 ```
 
-- **Preflight**：快速可行性评估，低可行性直接阻塞。
-- **Design**：Agent 生成架构文档，Reviewer 评审。
-- **Acceptance**：Agent 编写 bash 测试脚本，必须在当前代码上失败、实现后通过。红绿验证。
-- **Develop**：Agent 在隔离的 git worktree 中编写代码。支持会话恢复，实现有状态的多轮迭代。
+- **Design**（含 **preflight**）：Agent 生成架构文档，Reviewer 评审。首次进入时执行可行性评估——低可行性直接阻塞。
+- **Develop**（含 **acceptance**）：Agent 在隔离的 git worktree 中编写代码。首次进入时生成验收脚本，该脚本必须在当前代码上失败（红绿验证）。支持会话恢复，实现有状态的多轮迭代。
 - **Gate**：Engine 独立运行测试（`cargo test`、`pytest`、`go test`）和验收脚本。失败回退到 develop；连续 2 次失败升级给 Reviewer。
 - **Review**：Reviewer 评审代码 diff。通过 → 完成。
 
