@@ -9,10 +9,14 @@ interface clarity, error handling strategy, and testability.
 Do NOT check whether source files or code exist — implementation
 happens in a later phase. Focus only on the design quality.
 
-CRITICAL review item: The design MUST include a test strategy section with:
-- An exact test command (e.g. "make -C module test", "go test ./...")
+CRITICAL review items — flag as HIGH if missing:
+- Goal & acceptance criteria: the design MUST define the desired end state
+  and list concrete, testable acceptance criteria BEFORE the solution design.
+  Vague goals like "improve performance" or "fix the bug" are not acceptable.
+- Test strategy with an exact test command (e.g. "make -C module test", "go test ./...")
 - A yaml metadata block at the end with test_command field
-If either is missing, flag as HIGH severity.
+- For bugfix: root cause analysis must be present. A fix without understanding
+  the cause is a guess, not engineering.
 
 Focus on: logic correctness, design quality, potential issues that tests don't catch.
 

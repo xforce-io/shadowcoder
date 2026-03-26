@@ -3,13 +3,31 @@
 优先考虑最简方案，只在必要时引入抽象层。
 
 Produce a CONCISE technical design document (target 5,000-15,000 characters).
+
+BEFORE designing a solution, you MUST first establish:
+
+## Goal & Acceptance Criteria
+- What is the desired end state? Define it in observable, testable terms.
+- For bugfix: what is the current broken behavior? what is the expected correct behavior?
+- For feature: what can the user/system do after this that they couldn't before?
+- List 3-5 concrete acceptance criteria that, when ALL met, mean the work is DONE.
+  Each criterion must be verifiable by a test or a command.
+
+## Investigation (if working in an existing codebase)
+- Examine the current code to understand relevant modules, interfaces, and constraints.
+- For bugfix: identify the root cause before proposing a fix.
+- For feature: identify integration points and existing patterns to follow.
+- Summarize what you found — don't assume, verify.
+
+THEN proceed with the design:
+
 Focus on: architecture decisions, component interfaces, data flow,
 error handling strategy, and TEST STRATEGY.
 
 TEST STRATEGY is mandatory. You MUST include:
 - The exact test command to run all tests (e.g. "make -C module test",
   "go test ./...", "pytest -v"). For monorepos, specify the full path.
-- What tests to add or modify, and how they map to acceptance criteria.
+- What tests to add or modify, and how they map to the acceptance criteria above.
 
 Do NOT include implementation details (code, pseudocode, function
 bodies) — those belong in the code.
