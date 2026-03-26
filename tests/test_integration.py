@@ -116,6 +116,11 @@ class StubAgent(BaseAgent):
         return DesignOutput(document="## Architecture\nStub design output.\n\n## API\nStub API.")
 
     async def _default_develop(self, request):
+        # Create marker file so acceptance script passes after develop
+        wt = request.context.get("worktree_path")
+        if wt:
+            from pathlib import Path
+            (Path(wt) / ".dev_done").write_text("1")
         return DevelopOutput(summary="## Implementation\nStub develop output.")
 
     async def _default_review(self, request):
@@ -124,7 +129,21 @@ class StubAgent(BaseAgent):
             reviewer="stub-reviewer",
         )
 
+    def configure_acceptance(self, fn):
+        self._acceptance_fn = fn
+
     # --- interface ---
+
+    async def write_acceptance_script(self, request: AgentRequest):
+        from shadowcoder.agents.types import AcceptanceOutput
+        if hasattr(self, "_acceptance_fn"):
+            return await self._acceptance_fn(request)
+        # Default: return a script that fails before develop, passes after
+        # Uses a marker file: develop creates it, acceptance checks for it
+        return AcceptanceOutput(
+            script="#!/bin/bash\nset -euo pipefail\n"
+                   "# Stub acceptance: fail until .dev_done marker exists\n"
+                   "test -f .dev_done\n")
 
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
         self.preflight_calls.append(request)
@@ -257,6 +276,7 @@ def system(integ_repo, integ_config, agent):
     engine = Engine(bus, store, task_manager, registry, integ_config, str(integ_repo))
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
     engine._get_code_diff = AsyncMock(return_value="diff --git a/foo.py")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     return {
         "bus": bus,
@@ -495,6 +515,7 @@ class TestDevelopPhase:
             return True, "gate passed", "all tests pass"
 
         engine._gate_check = AsyncMock(side_effect=gate_fn)
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await self._setup_approved(bus, store)
         agent.review_calls.clear()
@@ -519,6 +540,7 @@ class TestDevelopPhase:
             return True, "gate passed", "ok"
 
         engine._gate_check = AsyncMock(side_effect=gate_fn)
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await self._setup_approved(bus, store)
         review_count_before = len(agent.review_calls)
@@ -539,6 +561,7 @@ class TestDevelopPhase:
             system["bus"], system["store"], system["agent"], system["engine"])
 
         engine._gate_check = AsyncMock(return_value=(False, "tests failed", "error"))
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await self._setup_approved(bus, store)
 
@@ -753,12 +776,14 @@ class TestErrorRecovery:
 
         # Make gate always fail to block develop
         engine._gate_check = AsyncMock(return_value=(False, "tests failed", "error"))
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
         assert store.get(1).status == IssueStatus.BLOCKED
 
         # Fix gate and resume
         engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
         agent.configure_review(agent._default_review)
 
         await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
@@ -811,6 +836,7 @@ class TestBudget:
         engine = Engine(bus, store, task_manager, registry, integ_config_with_budget, str(integ_repo))
         engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
         engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         expensive_usage = AgentUsage(input_tokens=10000, output_tokens=5000,
                                      duration_ms=5000, cost_usd=10.0)
@@ -843,6 +869,7 @@ class TestBudget:
         engine = Engine(bus, store, task_manager, registry, integ_config_with_budget, str(integ_repo))
         engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
         engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         # Get issue to APPROVED first
         store.create("Budget dev test")
@@ -1535,6 +1562,7 @@ class TestSessionResume:
             return True, "gate passed", "ok"
 
         engine._gate_check = AsyncMock(side_effect=gate_fn)
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, {"title": "Session resume"}))
         await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))

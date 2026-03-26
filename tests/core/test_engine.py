@@ -8,11 +8,25 @@ from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.models import IssueStatus, TaskStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
-    AgentRequest, AgentActionFailed, AgentUsage,
+    AcceptanceOutput, AgentRequest, AgentActionFailed, AgentUsage,
     DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput,
     ReviewComment, Severity,
 )
 from shadowcoder.agents.registry import AgentRegistry
+
+# Stub acceptance script: fails before develop (no .dev_done), passes after
+_STUB_ACCEPTANCE = AcceptanceOutput(
+    script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
+
+def _make_mock_agent(**overrides):
+    """Create a mock agent with acceptance_script support."""
+    agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
+    for k, v in overrides.items():
+        setattr(agent, k, v)
+    return agent
 
 
 @pytest.fixture
@@ -47,22 +61,26 @@ def task_mgr(mock_worktree):
 @pytest.fixture
 def passing_agent():
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="develop output"))
     agent.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     return agent
 
 
 @pytest.fixture
 def failing_review_agent():
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         comments=[ReviewComment(severity=Severity.CRITICAL, message="bad")],
         reviewer="mock",
     ))
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     return agent
 
 
@@ -93,6 +111,7 @@ async def test_design_happy_path(bus, store, task_mgr, registry_with, config):
 
 async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
@@ -114,6 +133,7 @@ async def test_design_review_fails_then_blocked(bus, store, task_mgr, config):
 
 async def test_design_agent_failure(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(side_effect=AgentActionFailed("design failed", partial_output="err"))
     reg = MagicMock()
@@ -130,6 +150,7 @@ async def test_design_agent_failure(bus, store, task_mgr, config):
 
 async def test_design_agent_exception(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(side_effect=RuntimeError("crash"))
     reg = MagicMock()
@@ -150,6 +171,7 @@ async def test_develop_happy_path(bus, store, task_mgr, registry_with, config):
     engine = make_engine(bus, store, task_mgr, registry_with, config)
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     issue = store.create("Test issue")
     store.transition_status(issue.id, IssueStatus.DESIGNING)
@@ -174,6 +196,7 @@ async def test_cancel(bus, store, task_mgr, registry_with, config):
 
 async def test_approve_blocked(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
@@ -241,6 +264,7 @@ async def test_create_no_title_no_url_gets_untitled(bus, store, task_mgr, regist
 async def test_resume_blocked_design(bus, store, task_mgr, config):
     call_count = 0
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
 
     async def design_side_effect(request):
@@ -272,6 +296,7 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
 
 async def test_all_reviewers_unavailable(bus, store, task_mgr, config):
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(side_effect=RuntimeError("reviewer crash"))
@@ -385,6 +410,7 @@ worktree:
     expensive_usage = AgentUsage(input_tokens=1000, output_tokens=500,
                                  duration_ms=2000, cost_usd=1.00)
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design", usage=expensive_usage))
     reg = MagicMock()
@@ -407,6 +433,7 @@ worktree:
 async def test_conditional_pass(bus, store, task_mgr, config):
     """Review returns HIGH=1 (conditional pass) — issue should still proceed to APPROVED."""
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="moderate"))
     agent.design = AsyncMock(return_value=DesignOutput(document="output"))
     agent.review = AsyncMock(return_value=ReviewOutput(
@@ -445,6 +472,7 @@ async def test_design_runs_preflight(bus, store, task_mgr, registry_with, config
 async def test_design_low_feasibility_blocks(bus, store, task_mgr, config):
     """Low feasibility preflight should block the issue."""
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(
         feasibility="low", estimated_complexity="very_complex",
         risks=["Haskell not suitable for concurrent MVCC"]))
@@ -466,6 +494,7 @@ async def test_run_full_lifecycle(bus, store, task_mgr, registry_with, config):
     engine = make_engine(bus, store, task_mgr, registry_with, config)
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     completed_events = []
     bus.subscribe(MessageType.EVT_TASK_COMPLETED, lambda m: completed_events.append(m))
@@ -486,6 +515,7 @@ async def test_run_existing_issue(bus, store, task_mgr, registry_with, config):
     engine = make_engine(bus, store, task_mgr, registry_with, config)
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     issue = store.create("Run existing")
     store.transition_status(issue.id, IssueStatus.DESIGNING)
@@ -500,6 +530,7 @@ async def test_run_existing_issue(bus, store, task_mgr, registry_with, config):
 async def test_gate_fail_escalation(bus, store, task_mgr, config):
     """Gate fails twice → reviewer gets called to analyze."""
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         comments=[ReviewComment(severity=Severity.MEDIUM, message="suggestion")],
@@ -525,6 +556,7 @@ async def test_gate_fail_escalation(bus, store, task_mgr, config):
         return True, "gate passed", "all tests pass"
     engine._gate_check = mock_gate
     engine._get_code_diff = AsyncMock(return_value="diff content")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
 
@@ -575,6 +607,7 @@ def test_extract_gate_failure_summary_empty(integ_env):
 async def test_preflight_warns_no_test_command(bus, store, task_mgr, config):
     """Existing project with no detectable test command logs a warning."""
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="simple"))
     agent.design = AsyncMock(return_value=DesignOutput(document="design", test_command="make test"))
     agent.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))

@@ -89,6 +89,12 @@ class PreflightOutput:
     usage: AgentUsage | None = None
 
 
+@dataclass
+class AcceptanceOutput:
+    script: str
+    usage: AgentUsage | None = None
+
+
 class AgentActionFailed(Exception):
     """Agent tried but could not complete the action."""
     def __init__(self, message: str, partial_output: str = ""):

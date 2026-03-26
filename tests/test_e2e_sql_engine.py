@@ -16,7 +16,7 @@ import frontmatter as fm
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AcceptanceOutput, AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -719,6 +719,9 @@ class StateDrivenAgent(BaseAgent):
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
         return PreflightOutput(feasibility="high", estimated_complexity="moderate")
 
+    async def write_acceptance_script(self, request: AgentRequest) -> AcceptanceOutput:
+        return AcceptanceOutput(script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
     async def design(self, request: AgentRequest) -> DesignOutput:
         self.execute_log.append(request.action)
         issue = request.issue
@@ -727,6 +730,10 @@ class StateDrivenAgent(BaseAgent):
 
     async def develop(self, request: AgentRequest) -> DevelopOutput:
         self.execute_log.append(request.action)
+        # Create marker file so acceptance script passes after develop
+        wt = request.context.get("worktree_path")
+        if wt:
+            (Path(wt) / ".dev_done").write_text("1")
         issue = request.issue
         requirements = issue.sections.get("需求", "")
         return self._do_develop(issue, requirements)

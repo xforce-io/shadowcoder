@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
+from shadowcoder.agents.types import AcceptanceOutput, AgentRequest, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, ReviewComment, Severity
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -71,8 +71,15 @@ A simple calculator module with add, subtract, multiply, divide functions.
 Unit tests for each function including edge cases."""
         return DesignOutput(document=document)
 
+    async def write_acceptance_script(self, request: AgentRequest) -> AcceptanceOutput:
+        return AcceptanceOutput(script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
     async def develop(self, request: AgentRequest) -> DevelopOutput:
         self.execute_calls.append(request)
+        # Create marker file so acceptance script passes after develop
+        wt = request.context.get("worktree_path")
+        if wt:
+            (Path(wt) / ".dev_done").write_text("1")
         summary = """## Implementation
 Created `calc.py` with four arithmetic functions.
 Created `test_calc.py` with 8 test cases.

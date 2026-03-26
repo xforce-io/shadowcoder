@@ -8,8 +8,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 
 from shadowcoder.agents.types import (
-    AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput,
-    ReviewOutput, TestCase, ReviewComment, Severity,
+    AcceptanceOutput, AgentRequest, AgentUsage, DesignOutput, DevelopOutput,
+    PreflightOutput, ReviewOutput, TestCase, ReviewComment, Severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,6 +306,41 @@ class BaseAgent(ABC):
                     message=f"Review output could not be parsed:\n{result}",
                 )]
             return ReviewOutput(comments=comments, reviewer=self.config.get("type", "unknown"), usage=usage)
+
+    async def write_acceptance_script(self, request: AgentRequest) -> AcceptanceOutput:
+        cwd = request.context.get("worktree_path")
+        context = self._build_context(request)
+        system = self._load_system_prompt("acceptance_writer")
+
+        pre_gate_failure = request.context.get("pre_gate_failure", "")
+        if pre_gate_failure:
+            prompt = (
+                f"{context}\n\n"
+                f"IMPORTANT — your previous acceptance script PASSED on unchanged code:\n"
+                f"{pre_gate_failure}\n\n"
+                f"Analyze why it passed and write a STRONGER script."
+            )
+        else:
+            prompt = (
+                f"{context}\n\n"
+                f"Write an acceptance test script (bash) for this issue. "
+                f"The script must FAIL on the current code and PASS after the fix/feature."
+            )
+
+        result, usage = await self._run(prompt, cwd=cwd, system_prompt=system)
+        # Extract script: strip markdown fences if present
+        script = result.strip()
+        if script.startswith("```"):
+            lines = script.splitlines()
+            # Remove first line (```bash or ```) and last line (```)
+            if lines[-1].strip() == "```":
+                lines = lines[1:-1]
+            else:
+                lines = lines[1:]
+            script = "\n".join(lines)
+        if not script.startswith("#!"):
+            script = "#!/bin/bash\nset -euo pipefail\n\n" + script
+        return AcceptanceOutput(script=script, usage=usage)
 
     # ------------------------------------------------------------------ #
     #  Utilities                                                           #

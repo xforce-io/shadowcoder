@@ -8,10 +8,22 @@ from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.models import IssueStatus
 from shadowcoder.core.config import Config
 from shadowcoder.agents.types import (
-    AgentRequest, AgentActionFailed,
+    AcceptanceOutput, AgentRequest, AgentActionFailed,
     DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput,
     ReviewComment, Severity,
 )
+
+_STUB_ACCEPTANCE = AcceptanceOutput(
+    script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
+
+def _make_mock_agent(**overrides):
+    agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
+    for k, v in overrides.items():
+        setattr(agent, k, v)
+    return agent
 
 
 @pytest.fixture
@@ -65,6 +77,7 @@ async def test_develop_gate_fail_then_pass(bus, store, task_mgr, config):
         return True, "gate passed", "ok"
 
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     agent.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))
     reg = MagicMock()
@@ -73,6 +86,7 @@ async def test_develop_gate_fail_then_pass(bus, store, task_mgr, config):
     engine = make_engine(bus, store, task_mgr, reg, config)
     engine._gate_check = AsyncMock(side_effect=gate_side_effect)
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     _setup_issue_at_approved(store)
 
@@ -86,6 +100,7 @@ async def test_develop_gate_fail_then_pass(bus, store, task_mgr, config):
 async def test_develop_gate_always_fail_blocked(bus, store, task_mgr, config):
     """Gate always fails → exhausts max_rounds → BLOCKED."""
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     reg = MagicMock()
     reg.get = MagicMock(return_value=agent)
@@ -93,6 +108,7 @@ async def test_develop_gate_always_fail_blocked(bus, store, task_mgr, config):
     engine = make_engine(bus, store, task_mgr, reg, config)
     engine._gate_check = AsyncMock(return_value=(False, "tests failed", ""))
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     _setup_issue_at_approved(store)
 
@@ -121,6 +137,7 @@ async def test_develop_review_critical_retries(bus, store, task_mgr, config):
         return ReviewOutput(comments=[], reviewer="mock")
 
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     agent.review = AsyncMock(side_effect=review_side_effect)
     reg = MagicMock()
@@ -129,6 +146,7 @@ async def test_develop_review_critical_retries(bus, store, task_mgr, config):
     engine = make_engine(bus, store, task_mgr, reg, config)
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     _setup_issue_at_approved(store)
 
@@ -142,6 +160,7 @@ async def test_develop_review_critical_retries(bus, store, task_mgr, config):
 async def test_develop_review_conditional_pass(bus, store, task_mgr, config):
     """Review has HIGH=1 (conditional pass) → DONE immediately."""
     agent = AsyncMock()
+    agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
     agent.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
     agent.review = AsyncMock(return_value=ReviewOutput(
         comments=[ReviewComment(severity=Severity.HIGH, message="minor high issue")],
@@ -153,6 +172,7 @@ async def test_develop_review_conditional_pass(bus, store, task_mgr, config):
     engine = make_engine(bus, store, task_mgr, reg, config)
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
     engine._get_code_diff = AsyncMock(return_value="")
+    engine._run_acceptance_phase = AsyncMock(return_value=True)
 
     _setup_issue_at_approved(store)
 

@@ -674,14 +674,89 @@ class Engine:
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
 
+    def _acceptance_script_path(self, issue_id: int) -> Path:
+        """Path for the acceptance test script."""
+        return Path(self.issue_store.base) / f"{issue_id:04d}.acceptance.sh"
+
+    async def _run_acceptance_phase(self, issue, task) -> bool:
+        """Write acceptance script and verify it FAILS on unchanged code.
+
+        Returns True if acceptance phase passed (script written and fails as expected),
+        False if blocked (script keeps passing — criteria too weak).
+        """
+        acceptance_path = self._acceptance_script_path(issue.id)
+        max_attempts = 3
+
+        for attempt in range(1, max_attempts + 1):
+            # Write or rewrite acceptance script
+            acc_agent_name = self.config.get_agent_for_phase("acceptance")
+            acc_agent = self.agents.get(acc_agent_name)
+
+            ctx = {
+                "worktree_path": task.worktree_path,
+            }
+            if attempt > 1:
+                ctx["pre_gate_failure"] = (
+                    f"Your acceptance script PASSED on unchanged code. "
+                    f"This means your assertions don't test the actual problem.\n\n"
+                    f"Script content:\n{acceptance_path.read_text(encoding='utf-8')}\n\n"
+                    f"Execution output:\n{self._last_acceptance_output}\n\n"
+                    f"Analyze WHY it passed. Write stronger assertions that "
+                    f"will FAIL until the fix/feature is implemented."
+                )
+
+            request = AgentRequest(
+                action="write_acceptance_script", issue=issue, context=ctx)
+
+            self._log(issue.id, f"Acceptance script 生成 (attempt {attempt}/{max_attempts})")
+            try:
+                output = await acc_agent.write_acceptance_script(request)
+            except Exception as e:
+                self._log(issue.id, f"Acceptance writer 异常: {e}")
+                # Non-fatal: skip acceptance phase, proceed to develop
+                return True
+
+            self._track_usage(issue.id, output.usage,
+                              phase="acceptance", round_num=attempt)
+            acceptance_path.write_text(output.script, encoding="utf-8")
+
+            # Pre-gate: script must FAIL
+            passed, exec_output = await self._run_command(
+                f"bash {acceptance_path}", cwd=task.worktree_path)
+            self._last_acceptance_output = exec_output
+
+            if not passed:
+                self._log(issue.id,
+                    f"Pre-gate: acceptance script FAIL (expected) ✓")
+                return True
+
+            self._log(issue.id,
+                f"Pre-gate: acceptance script PASS — too weak "
+                f"(attempt {attempt}/{max_attempts})")
+
+        # Exhausted retries
+        self._log(issue.id,
+            "Pre-gate: acceptance script still PASS after "
+            f"{max_attempts} attempts → BLOCKED")
+        self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+        await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+            "issue_id": issue.id, "task_id": task.task_id,
+            "reason": "acceptance tests already pass — criteria too weak"}))
+        return False
+
     async def _run_develop_cycle(self, issue, task):
-        """Develop cycle: develop → gate → review → repeat or done."""
+        """Develop cycle: [acceptance] → develop → [acceptance check] → gate → review → repeat or done."""
         max_rounds = self.config.get_max_review_rounds()
         action_label = "Develop"
         section_key = "开发步骤"
         review_section_key = "Dev Review"
 
         proposed_tests = self._get_gate_tests(issue.id)
+
+        # --- Acceptance script: write and verify it fails ---
+        acceptance_ok = await self._run_acceptance_phase(issue, task)
+        if not acceptance_ok:
+            return
 
         try:
             gate_fail_count = 0
@@ -742,6 +817,24 @@ class Engine:
                 self._log(issue.id,
                     f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
                     f"内容长度: {len(content)} 字符, 存档: {vfile}")
+
+                # Acceptance check (must PASS after develop)
+                acceptance_path = self._acceptance_script_path(issue.id)
+                if acceptance_path.exists():
+                    acc_passed, acc_output = await self._run_command(
+                        f"bash {acceptance_path}", cwd=task.worktree_path)
+                    if not acc_passed:
+                        gate_fail_count += 1
+                        self._log(issue.id,
+                            f"Acceptance FAIL ({gate_fail_count}): "
+                            f"验收断言未通过，问题尚未解决")
+                        if acc_output:
+                            self._log(issue.id,
+                                f"Acceptance output (last 1000 chars):\n{acc_output[-1000:]}")
+                        last_gate_output = acc_output
+                        issue = self.issue_store.get(issue.id)
+                        continue  # retry develop
+                    self._log(issue.id, "Acceptance PASS ✓")
 
                 # Gate (symbolic)
                 gate_ok, gate_msg, gate_output = await self._gate_check(
