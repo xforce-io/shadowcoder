@@ -15,12 +15,16 @@ class Config:
             with open(resolved) as f:
                 self._data = yaml.safe_load(f) or {}
 
+        # Build roles search dirs: project > user-global
+        self._roles_dirs: list[str] = []
         if repo_path:
             project_conf = Path(repo_path) / ".shadowcoder" / "config.yaml"
             if project_conf.exists():
                 with open(project_conf) as f:
                     overrides = yaml.safe_load(f) or {}
                 self._apply_overrides(overrides)
+            self._roles_dirs.append(str(Path(repo_path) / ".shadowcoder" / "roles"))
+        self._roles_dirs.append(str(Path("~/.shadowcoder/roles").expanduser()))
 
         if resolved.exists() or repo_path:
             self._validate()
@@ -95,7 +99,7 @@ class Config:
         return value
 
     def get_agent_config(self, name: str) -> dict:
-        """Return merged config dict: agent fields + resolved model + cloud env."""
+        """Return merged config dict: agent fields + resolved model + cloud env + roles dirs."""
         agent = self._data["agents"][name]
         model_name = agent.get("model")
         result = dict(agent)
@@ -109,6 +113,7 @@ class Config:
                 cloud_env.update(result.get("env") or {})
                 if cloud_env:
                     result["env"] = cloud_env
+        result["_roles_dirs"] = self._roles_dirs
         return result
 
     def get_pass_threshold(self) -> str:

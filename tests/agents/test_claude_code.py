@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import AsyncMock, patch
-from shadowcoder.agents.claude_code import ClaudeCodeAgent, DEFAULT_ROLE_INSTRUCTIONS
+from shadowcoder.agents.claude_code import ClaudeCodeAgent
 from shadowcoder.agents.types import AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput, ReviewOutput, Severity
 from shadowcoder.core.models import Issue, IssueStatus
 from datetime import datetime
@@ -115,76 +115,84 @@ async def test_review_with_code_diff_uses_diff_context(agent, sample_request):
     assert "diff" in prompt.lower() or "Git Diff" in prompt
 
 
-# --- Role instruction tests ---
+# --- System prompt loading tests ---
 
 
-def test_default_role_instructions(agent):
-    """Default role instructions are used when config has no roles."""
-    for role in ("designer", "design_reviewer", "developer", "code_reviewer"):
-        assert agent._get_role_instruction(role) == DEFAULT_ROLE_INSTRUCTIONS[role]
+def test_load_system_prompt_from_builtin(agent):
+    """Built-in instructions.md files are loaded for all roles."""
+    for role in ("designer", "design_reviewer", "developer", "code_reviewer", "preflight"):
+        prompt = agent._load_system_prompt(role)
+        assert len(prompt) > 0, f"No built-in prompt for {role}"
 
 
-def test_custom_role_instruction_overrides_default():
-    """Config roles override default instructions."""
-    custom = ClaudeCodeAgent({
-        "type": "claude_code",
-        "roles": {
-            "designer": {"instruction": "Custom designer instruction"},
-        },
-    })
-    assert custom._get_role_instruction("designer") == "Custom designer instruction"
-    # Other roles still use defaults
-    assert custom._get_role_instruction("developer") == DEFAULT_ROLE_INSTRUCTIONS["developer"]
-
-
-def test_unknown_role_returns_empty(agent):
+def test_load_system_prompt_unknown_role(agent):
     """Unknown role returns empty string."""
-    assert agent._get_role_instruction("unknown_role") == ""
+    assert agent._load_system_prompt("unknown_role") == ""
 
 
-async def test_design_prompt_includes_role_instruction(agent, sample_request):
-    """Design system prompt includes designer role instruction."""
+def test_load_system_prompt_project_override(tmp_path):
+    """Project-level roles override built-in ones."""
+    role_dir = tmp_path / "roles" / "designer"
+    role_dir.mkdir(parents=True)
+    (role_dir / "instructions.md").write_text("Custom project designer instructions")
+    custom = ClaudeCodeAgent({"type": "claude_code", "_roles_dirs": [str(tmp_path / "roles")]})
+    assert custom._load_system_prompt("designer") == "Custom project designer instructions"
+
+
+def test_load_system_prompt_multiple_md_files(tmp_path):
+    """Multiple .md files in a role dir are concatenated in sorted order."""
+    role_dir = tmp_path / "roles" / "developer"
+    role_dir.mkdir(parents=True)
+    (role_dir / "01_persona.md").write_text("You are a developer.")
+    (role_dir / "02_rules.md").write_text("Follow these rules.")
+    agent = ClaudeCodeAgent({"type": "claude_code", "_roles_dirs": [str(tmp_path / "roles")]})
+    prompt = agent._load_system_prompt("developer")
+    assert "You are a developer." in prompt
+    assert "Follow these rules." in prompt
+    assert prompt.index("You are a developer.") < prompt.index("Follow these rules.")
+
+
+async def test_design_prompt_loads_from_file(agent, sample_request):
+    """Design system prompt is loaded from designer instructions file."""
     agent._run = AsyncMock(
         return_value=("Design doc", _make_usage()))
     await agent.design(sample_request)
-    call_args = agent._run.call_args
-    system_prompt = call_args[1].get("system_prompt", "")
-    assert DEFAULT_ROLE_INSTRUCTIONS["designer"] in system_prompt
+    system_prompt = agent._run.call_args[1].get("system_prompt", "")
+    # Check content from built-in designer/instructions.md
+    assert "资深系统架构师" in system_prompt
+    assert "test_command" in system_prompt
 
 
-async def test_develop_prompt_includes_role_instruction(agent, sample_request):
-    """Develop system prompt includes developer role instruction."""
+async def test_develop_prompt_loads_from_file(agent, sample_request):
+    """Develop system prompt is loaded from developer instructions file."""
     sample_request.action = "develop"
     agent._run = AsyncMock(
         return_value=("Code", _make_usage()))
     agent._get_files_changed = AsyncMock(return_value=[])
     await agent.develop(sample_request)
-    call_args = agent._run.call_args
-    system_prompt = call_args[1].get("system_prompt", "")
-    assert DEFAULT_ROLE_INSTRUCTIONS["developer"] in system_prompt
+    system_prompt = agent._run.call_args[1].get("system_prompt", "")
+    assert "务实的高级工程师" in system_prompt
 
 
-async def test_review_design_prompt_includes_role_instruction(agent, sample_request):
-    """Design review system prompt includes design_reviewer role instruction."""
+async def test_review_design_prompt_loads_from_file(agent, sample_request):
+    """Design review system prompt is loaded from design_reviewer instructions file."""
     sample_request.action = "review"
     agent._run = AsyncMock(
         return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
     await agent.review(sample_request)
-    call_args = agent._run.call_args
-    system_prompt = call_args[1].get("system_prompt", "")
-    assert DEFAULT_ROLE_INSTRUCTIONS["design_reviewer"] in system_prompt
+    system_prompt = agent._run.call_args[1].get("system_prompt", "")
+    assert "架构评审专家" in system_prompt
 
 
-async def test_review_code_prompt_includes_role_instruction(agent, sample_request):
-    """Code review system prompt includes code_reviewer role instruction."""
+async def test_review_code_prompt_loads_from_file(agent, sample_request):
+    """Code review system prompt is loaded from code_reviewer instructions file."""
     sample_request.action = "review"
     sample_request.context["code_diff"] = "diff --git ..."
     agent._run = AsyncMock(
         return_value=('{"comments": [], "resolved_item_ids": [], "proposed_tests": []}', _make_usage()))
     await agent.review(sample_request)
-    call_args = agent._run.call_args
-    system_prompt = call_args[1].get("system_prompt", "")
-    assert DEFAULT_ROLE_INSTRUCTIONS["code_reviewer"] in system_prompt
+    system_prompt = agent._run.call_args[1].get("system_prompt", "")
+    assert "代码评审专家" in system_prompt
 
 
 def test_agent_usage_has_phase_and_round():

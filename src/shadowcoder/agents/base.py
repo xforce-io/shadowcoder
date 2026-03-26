@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from abc import ABC, abstractmethod
-from textwrap import dedent
+from pathlib import Path
 
 from shadowcoder.agents.types import (
     AgentRequest, AgentUsage, DesignOutput, DevelopOutput, PreflightOutput,
@@ -14,32 +14,8 @@ from shadowcoder.agents.types import (
 
 logger = logging.getLogger(__name__)
 
-# Default role instructions — used when config doesn't specify custom ones.
-DEFAULT_ROLE_INSTRUCTIONS: dict[str, str] = {
-    "designer": (
-        "你是一位资深系统架构师。你注重模块解耦、接口清晰和可测试性。"
-        "你的设计应该简洁务实，避免过度工程化。"
-        "优先考虑最简方案，只在必要时引入抽象层。"
-    ),
-    "design_reviewer": (
-        "你是一位严格的架构评审专家。你关注设计的完整性、一致性和可扩展性。"
-        "你会质疑不必要的复杂性，检查边界情况是否被考虑，"
-        "并确保设计文档能指导开发者正确实现。"
-        "对设计缺陷要直接指出，不要客气。"
-    ),
-    "developer": (
-        "你是一位务实的高级工程师。你的首要目标是写出能工作、能通过测试的代码。"
-        "你遵循项目现有的代码风格和约定。"
-        "你重视代码的可读性和可维护性，但不会为了完美而过度重构。"
-        "如果有 review 反馈，你会逐条解决。"
-    ),
-    "code_reviewer": (
-        "你是一位严格的代码评审专家。你关注逻辑正确性、边界情况和安全性。"
-        "你会检查测试无法覆盖的潜在问题：竞态条件、资源泄漏、错误处理遗漏。"
-        "你不会纠结于风格问题，而是聚焦于真正影响正确性和可靠性的问题。"
-        "对发现的问题要给出具体的修改建议。"
-    ),
-}
+# Built-in roles directory (shipped with the package)
+_BUILTIN_ROLES_DIR = Path(__file__).resolve().parent.parent / "roles"
 
 # Map severity strings to enum
 _SEVERITY_MAP = {
@@ -96,12 +72,32 @@ class BaseAgent(ABC):
             env[k] = os.path.expandvars(str(v))
         return env
 
-    def _get_role_instruction(self, role: str) -> str:
-        """Get role instruction: config override > default > empty."""
-        custom = self.config.get("roles", {}).get(role, {}).get("instruction")
-        if custom:
-            return custom
-        return DEFAULT_ROLE_INSTRUCTIONS.get(role, "")
+    def _load_system_prompt(self, role: str) -> str:
+        """Load system prompt for a role from instructions files.
+
+        Search order:
+        1. <project>/.shadowcoder/roles/<role>/*.md  (project-level)
+        2. ~/.shadowcoder/roles/<role>/*.md           (user-level)
+        3. <package>/roles/<role>/*.md                 (built-in default)
+
+        Within each directory, all .md files are sorted by name and concatenated.
+        The first directory that contains any .md files wins (no merging across levels).
+        """
+        roles_dirs = self.config.get("_roles_dirs", [])
+        search_dirs = [Path(d) / role for d in roles_dirs]
+        search_dirs.append(_BUILTIN_ROLES_DIR / role)
+
+        for role_dir in search_dirs:
+            if not role_dir.is_dir():
+                continue
+            md_files = sorted(role_dir.glob("*.md"))
+            if md_files:
+                parts = []
+                for f in md_files:
+                    parts.append(f.read_text(encoding="utf-8").strip())
+                return "\n\n".join(parts)
+
+        return ""
 
     @staticmethod
     def _extract_test_command(document: str) -> str | None:
@@ -227,24 +223,7 @@ class BaseAgent(ABC):
 
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
         context = self._build_context(request)
-        role_instruction = self._get_role_instruction("designer")
-        system = f"{role_instruction}\n\n" if role_instruction else ""
-        system += dedent("""\
-            Quickly assess the feasibility of this project. Do NOT produce a full design.
-
-            Output ONLY JSON:
-            {
-                "feasibility": "high" | "medium" | "low",
-                "estimated_complexity": "simple" | "moderate" | "complex" | "very_complex",
-                "risks": ["risk 1", "risk 2", ...],
-                "tech_stack_recommendation": "optional suggestion"
-            }
-
-            Assessment criteria:
-            - feasibility: can this realistically be built with the specified tech stack?
-            - complexity: how many subsystems, how much integration work?
-            - risks: what could go wrong or take much longer than expected?
-        """)
+        system = self._load_system_prompt("preflight")
         prompt = f"{context}\n\nAssess feasibility. Be brief and direct."
         result, usage = await self._run(prompt, cwd=request.context.get("worktree_path"), system_prompt=system)
         try:
@@ -262,37 +241,7 @@ class BaseAgent(ABC):
     async def design(self, request: AgentRequest) -> DesignOutput:
         cwd = request.context.get("worktree_path")
         context = self._build_context(request)
-
-        role_instruction = self._get_role_instruction("designer")
-        system = f"{role_instruction}\n\n" if role_instruction else ""
-        system += dedent("""\
-            Produce a CONCISE technical design document (target 5,000-15,000 characters).
-            Focus on: architecture decisions, component interfaces, data flow,
-            error handling strategy, and TEST STRATEGY.
-
-            TEST STRATEGY is mandatory. You MUST include:
-            - The exact test command to run all tests (e.g. "make -C module test",
-              "go test ./...", "pytest -v"). For monorepos, specify the full path.
-            - What tests to add or modify, and how they map to acceptance criteria.
-
-            Do NOT include implementation details (code, pseudocode, function
-            bodies) — those belong in the code.
-            Do NOT repeat the requirements — reference them by name.
-
-            If there are previous review comments, address each one specifically.
-
-            CRITICAL: You MUST output the COMPLETE design document every time,
-            not just the changes or a supplement. The previous version will be
-            REPLACED entirely by your output. If you only output a patch,
-            the full design will be lost.
-
-            At the END of the document, output a fenced metadata block:
-            ```yaml
-            test_command: "<exact shell command to run tests>"
-            ```
-
-            Output the design document in markdown format.
-        """)
+        system = self._load_system_prompt("designer")
         prompt = f"{context}\n\nProduce the technical design for this issue."
         result, usage = await self._run(prompt, cwd=cwd, system_prompt=system)
         test_command = self._extract_test_command(result)
@@ -301,24 +250,7 @@ class BaseAgent(ABC):
     async def develop(self, request: AgentRequest) -> DevelopOutput:
         cwd = request.context.get("worktree_path")
         context = self._build_context(request)
-
-        role_instruction = self._get_role_instruction("developer")
-        system = f"{role_instruction}\n\n" if role_instruction else ""
-        system += dedent("""\
-            Implement the code based on the design document. You MUST:
-            1. Create actual source files in the working directory
-            2. Write tests
-            3. Make sure the code compiles/runs without errors
-            4. Create a .gitignore appropriate for the project (e.g. /target for Rust, node_modules/ for JS)
-            5. Never mark acceptance tests as ignored/skipped — they must run with the default test command
-
-            If there are previous review comments or test failures,
-            address each one specifically.
-
-            After writing code, provide a COMPLETE summary of everything
-            implemented so far (not just what changed this round).
-            The previous summary will be REPLACED by your output.
-        """)
+        system = self._load_system_prompt("developer")
         prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
         # Session semantics: engine passes session_id or resume_id via context
         session_id = request.context.get("session_id")
@@ -333,57 +265,14 @@ class BaseAgent(ABC):
         cwd = request.context.get("worktree_path")
         # Use diff-aware context if code_diff provided (develop review),
         # otherwise use standard context (design review)
-        if request.context.get("code_diff"):
+        is_develop_review = bool(request.context.get("code_diff"))
+        if is_develop_review:
             context = self._build_review_context(request)
+            system = self._load_system_prompt("code_reviewer")
         else:
             context = self._build_context(request)
+            system = self._load_system_prompt("design_reviewer")
 
-        # Different prompt for design review vs develop review
-        is_develop_review = bool(request.context.get("code_diff"))
-
-        if is_develop_review:
-            role_instruction = self._get_role_instruction("code_reviewer")
-            system = f"{role_instruction}\n\n" if role_instruction else ""
-            system += dedent("""\
-            You are reviewing a code change. The git diff is provided below.
-            The code has already passed build and all tests via the gate.
-            If gate failure output is provided, analyze why tests are failing.
-            Focus on: logic correctness, design quality, potential issues that tests don't catch.
-            Do NOT check whether source files exist — that is the gate's job.""")
-        else:
-            role_instruction = self._get_role_instruction("design_reviewer")
-            system = f"{role_instruction}\n\n" if role_instruction else ""
-            system += dedent("""\
-            You are reviewing a DESIGN DOCUMENT, not code.
-            Evaluate the design for: completeness, architectural soundness,
-            interface clarity, error handling strategy, and testability.
-            Do NOT check whether source files or code exist — implementation
-            happens in a later phase. Focus only on the design quality.
-
-            CRITICAL review item: The design MUST include a test strategy section with:
-            - An exact test command (e.g. "make -C module test", "go test ./...")
-            - A yaml metadata block at the end with test_command field
-            If either is missing, flag as HIGH severity.""")
-
-        system += dedent("""
-            Focus on: logic correctness, design quality, potential issues that tests don't catch.
-
-            For each issue found, classify its severity:
-            - critical: breaks core functionality, security vulnerability, data corruption
-            - high: missing required feature, significant logic bug
-            - medium: code quality, minor missing feature, style
-            - low: naming, minor improvement
-
-            Also check if previously unresolved feedback items are now addressed.
-            Propose 1-3 new test cases if you find issues worth testing.
-
-            Output ONLY JSON:
-            {
-                "comments": [{"severity": "...", "message": "...", "location": "..."}],
-                "resolved_item_ids": ["F1", "F3"],
-                "proposed_tests": [{"name": "test_name", "description": "what to test", "expected_behavior": "expected result"}]
-            }
-        """)
         prompt = f"{context}\n\nReview the current design/implementation against requirements."
 
         result, usage = await self._run(prompt, cwd=cwd, system_prompt=system)

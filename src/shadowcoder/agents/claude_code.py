@@ -5,7 +5,7 @@ import json
 import logging
 import time
 
-from shadowcoder.agents.base import BaseAgent, DEFAULT_ROLE_INSTRUCTIONS  # noqa: F401 — re-export for backwards compat
+from shadowcoder.agents.base import BaseAgent
 from shadowcoder.agents.types import AgentUsage
 
 logger = logging.getLogger(__name__)
