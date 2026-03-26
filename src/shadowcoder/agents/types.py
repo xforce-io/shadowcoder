@@ -41,6 +41,7 @@ class AgentRequest:
 @dataclass
 class DesignOutput:
     document: str
+    test_command: str | None = None
     usage: AgentUsage | None = None
 
 

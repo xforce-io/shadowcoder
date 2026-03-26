@@ -67,6 +67,16 @@ class ClaudeCodeAgent(BaseAgent):
             return custom
         return DEFAULT_ROLE_INSTRUCTIONS.get(role, "")
 
+    @staticmethod
+    def _extract_test_command(document: str) -> str | None:
+        """Extract test_command from yaml metadata block at end of design document."""
+        match = re.search(
+            r'```ya?ml\s*\n.*?test_command:\s*["\']?(.+?)["\']?\s*\n.*?```',
+            document, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return None
+
     def _get_env(self) -> dict[str, str] | None:
         """Build environment for subprocess, merging custom env vars if configured."""
         custom_env = self.config.get("env")
@@ -271,7 +281,13 @@ class ClaudeCodeAgent(BaseAgent):
         system += dedent("""\
             Produce a CONCISE technical design document (target 5,000-15,000 characters).
             Focus on: architecture decisions, component interfaces, data flow,
-            error handling strategy.
+            error handling strategy, and TEST STRATEGY.
+
+            TEST STRATEGY is mandatory. You MUST include:
+            - The exact test command to run all tests (e.g. "make -C module test",
+              "go test ./...", "pytest -v"). For monorepos, specify the full path.
+            - What tests to add or modify, and how they map to acceptance criteria.
+
             Do NOT include implementation details (code, pseudocode, function
             bodies) — those belong in the code.
             Do NOT repeat the requirements — reference them by name.
@@ -283,11 +299,17 @@ class ClaudeCodeAgent(BaseAgent):
             REPLACED entirely by your output. If you only output a patch,
             the full design will be lost.
 
-            Output ONLY the design document in markdown format.
+            At the END of the document, output a fenced metadata block:
+            ```yaml
+            test_command: "<exact shell command to run tests>"
+            ```
+
+            Output the design document in markdown format.
         """)
         prompt = f"{context}\n\nProduce the technical design for this issue."
         result, usage = await self._run_claude_with_usage(prompt, cwd=cwd, system_prompt=system)
-        return DesignOutput(document=result, usage=usage)
+        test_command = self._extract_test_command(result)
+        return DesignOutput(document=result, test_command=test_command, usage=usage)
 
     async def develop(self, request: AgentRequest) -> DevelopOutput:
         cwd = request.context.get("worktree_path")
@@ -372,7 +394,12 @@ class ClaudeCodeAgent(BaseAgent):
             Evaluate the design for: completeness, architectural soundness,
             interface clarity, error handling strategy, and testability.
             Do NOT check whether source files or code exist — implementation
-            happens in a later phase. Focus only on the design quality.""")
+            happens in a later phase. Focus only on the design quality.
+
+            CRITICAL review item: The design MUST include a test strategy section with:
+            - An exact test command (e.g. "make -C module test", "go test ./...")
+            - A yaml metadata block at the end with test_command field
+            If either is missing, flag as HIGH severity.""")
 
         system += dedent("""
             Focus on: logic correctness, design quality, potential issues that tests don't catch.

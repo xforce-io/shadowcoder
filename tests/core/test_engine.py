@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from shadowcoder.core.engine import Engine
 from shadowcoder.core.bus import MessageBus, MessageType, Message
@@ -569,3 +570,62 @@ def test_extract_gate_failure_summary_go(integ_env):
 def test_extract_gate_failure_summary_empty(integ_env):
     engine = integ_env["engine"]
     assert engine._extract_gate_failure_summary("all tests passed") == ""
+
+
+async def test_preflight_warns_no_test_command(bus, store, task_mgr, config):
+    """Existing project with no detectable test command logs a warning."""
+    agent = AsyncMock()
+    agent.preflight = AsyncMock(return_value=PreflightOutput(feasibility="high", estimated_complexity="simple"))
+    agent.design = AsyncMock(return_value=DesignOutput(document="design", test_command="make test"))
+    agent.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+
+    engine = make_engine(bus, store, task_mgr, reg, config)
+    store.create("Test issue")
+
+    import tempfile, os
+    with tempfile.TemporaryDirectory() as td:
+        # Create a file so it's not empty (existing project) but no marker file
+        Path(os.path.join(td, "main.go")).write_text("package main")
+        # Mock task creation to use this dir
+        original_create = task_mgr.create
+        async def mock_create(*args, **kwargs):
+            t = await original_create(*args, **kwargs)
+            t.worktree_path = td
+            return t
+        task_mgr.create = mock_create
+
+        await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
+        log = store.get_log(1)
+        assert "auto-detect test command" in log.lower() or "test_command" in log
+
+
+async def test_gate_uses_design_test_command(bus, store, task_mgr, registry_with, config):
+    """When detect_language fails but design provided test_command, gate uses it."""
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    store.create("Test issue")
+
+    # Store test_command in feedback (simulating what design cycle does)
+    fb = store.load_feedback(1)
+    fb["test_command"] = "echo TESTS_PASS"
+    store.save_feedback(1, fb)
+
+    # Gate should use "echo TESTS_PASS" and succeed
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        passed, msg, output = await engine._gate_check(1, td, [])
+        assert passed
+        assert "TESTS_PASS" in output
+
+
+async def test_gate_fallback_without_design_test_command(bus, store, task_mgr, registry_with, config):
+    """When no config, no design test_command, and no marker files, gate fails."""
+    engine = make_engine(bus, store, task_mgr, registry_with, config)
+    store.create("Test issue")
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        passed, msg, output = await engine._gate_check(1, td, [])
+        assert not passed
+        assert "Cannot detect test command" in msg

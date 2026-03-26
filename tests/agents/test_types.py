@@ -30,6 +30,16 @@ def test_design_output():
     assert o.usage is None
 
 
+def test_design_output_test_command():
+    d = DesignOutput(document="doc", test_command="make -C bkn test")
+    assert d.test_command == "make -C bkn test"
+
+
+def test_design_output_test_command_default():
+    d = DesignOutput(document="doc")
+    assert d.test_command is None
+
+
 def test_develop_output_defaults():
     o = DevelopOutput(summary="implemented X")
     assert o.files_changed == []

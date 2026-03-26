@@ -143,6 +143,10 @@ class Engine:
         test_cmd = self.config.get_test_command()
         profile = None
         if not test_cmd:
+            # Try design-provided test_command
+            fb = self.issue_store.load_feedback(issue_id)
+            test_cmd = fb.get("test_command")
+        if not test_cmd:
             if not worktree_path:
                 return True, "no worktree, gate skipped", ""
             profile = detect_language(worktree_path)
@@ -597,6 +601,11 @@ class Engine:
 
                 vfile = self.issue_store.save_version(issue.id, "design", round_num, content)
                 self.issue_store.update_section(issue.id, section_key, content)
+                if output.test_command:
+                    fb = self.issue_store.load_feedback(issue.id)
+                    fb["test_command"] = output.test_command
+                    self.issue_store.save_feedback(issue.id, fb)
+                    self._log(issue.id, f"Test command: {output.test_command}")
                 self._log(issue.id,
                     f"{action_label} R{round_num} Agent 产出\n"
                     f"内容长度: {len(content)} 字符, 存档: {vfile}")
@@ -905,9 +914,20 @@ class Engine:
             except Exception as e:
                 self._log(issue.id, f"Preflight 跳过 (error: {e})")
 
-        # Continue with design cycle
+        # Create task (sets up worktree)
         task = await self.task_manager.create(issue, repo_path=self.repo_path,
             action="design", agent_name=self.config.get_agent_for_phase("design"))
+
+        # Check test command detectability for existing projects
+        if not self.config.get_test_command():
+            wt = task.worktree_path
+            if wt and Path(wt).exists() and any(Path(wt).iterdir()):
+                if not detect_language(wt):
+                    self._log(issue.id,
+                        "Preflight 警告: Cannot auto-detect test command. "
+                        "Designer MUST provide test_command in the design document. "
+                        "Alternatively, set build.test_command in config.")
+
         await self._run_design_cycle(issue, task)
 
     async def _on_develop(self, msg):

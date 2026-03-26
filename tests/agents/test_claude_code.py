@@ -295,3 +295,18 @@ async def test_review_fallback_preserves_full_text():
     result = await agent.review(sample_request_factory())
     assert len(result.comments) == 1
     assert long_text in result.comments[0].message
+
+
+def test_extract_test_command_from_design():
+    doc = '# Design\n\nSome content.\n\n```yaml\ntest_command: "make -C bkn/bkn-backend test"\n```\n'
+    assert ClaudeCodeAgent._extract_test_command(doc) == "make -C bkn/bkn-backend test"
+
+
+def test_extract_test_command_no_quotes():
+    doc = '# Design\n\n```yaml\ntest_command: go test ./...\n```\n'
+    assert ClaudeCodeAgent._extract_test_command(doc) == "go test ./..."
+
+
+def test_extract_test_command_missing():
+    doc = '# Design\n\nNo metadata block.'
+    assert ClaudeCodeAgent._extract_test_command(doc) is None
