@@ -158,7 +158,7 @@ def test_append_review_splits(store):
     # Full review content should NOT be in .md
     assert "Fix this" not in issue.sections["Design Review"]
 
-    # .log.md has full content
+    # .log has full content
     log = store.get_log(1)
     assert "Fix this" in log
     assert "claude-code" in log
@@ -168,7 +168,7 @@ def test_list_all_ignores_log_files(store):
     store.create("A")
     store.append_log(1, "some log")
     issues = store.list_all()
-    assert len(issues) == 1  # should not count .log.md as an issue
+    assert len(issues) == 1  # should not count .log as an issue
 
 
 def test_next_id_ignores_log_files(store):

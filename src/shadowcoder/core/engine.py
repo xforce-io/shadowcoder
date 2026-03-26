@@ -266,9 +266,9 @@ class Engine:
         idx = log.rfind(marker)
         if idx < 0:
             return ""
-        # Extract from that point to the next log entry (## [) or end
+        # Extract from that point to the next log entry or end
         start = idx + len(marker)
-        next_entry = log.find("\n\n## [", start)
+        next_entry = log.find("\n[20", start)  # next timestamped entry
         if next_entry < 0:
             return log[start:].strip()
         return log[start:next_entry].strip()

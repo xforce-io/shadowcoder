@@ -215,7 +215,7 @@ class BaseAgent(ABC):
 ```
 .shadowcoder/issues/
   0001.md          # 当前状态（需求、设计、实现、测试结果）
-  0001.log.md      # 按时间顺序的时间线——每个操作带时间戳
+  0001.log         # 按时间顺序的时间线——每个操作带时间戳
   0001.versions/   # 归档输出——design_r1.md, design_r2.md, develop_r1.md, ...
 ```
 

@@ -28,7 +28,7 @@ class IssueStore:
         return max(int(f.stem) for f in existing) + 1
 
     def _log_path(self, issue_id: int) -> Path:
-        return self.base / f"{issue_id:04d}.log.md"
+        return self.base / f"{issue_id:04d}.log"
 
     def _feedback_path(self, issue_id: int) -> Path:
         return self.base / f"{issue_id:04d}.feedback.json"
@@ -140,7 +140,7 @@ class IssueStore:
         issue.sections[section] = summary
         self._save(issue)
 
-        # .log.md: full review content (append) — include verdict for traceability
+        # .log: full review content (append) — include verdict for traceability
         formatted = self._format_review(review)
         self.append_log(issue_id, f"{section}\n{summary}\n{formatted}")
 
@@ -148,7 +148,7 @@ class IssueStore:
         path = self._log_path(issue_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        log_entry = f"\n\n## [{ts}] {entry}"
+        log_entry = f"\n[{ts}] {entry}\n"
         with open(path, "a", encoding="utf-8") as f:
             f.write(log_entry)
 
@@ -203,10 +203,12 @@ class IssueStore:
     def _format_review(review: ReviewOutput) -> str:
         critical = sum(1 for c in review.comments if c.severity.value == "critical")
         high = sum(1 for c in review.comments if c.severity.value == "high")
-        lines = [f"**Reviewer: {review.reviewer}** — CRITICAL={critical}, HIGH={high}"]
+        lines = [f"Reviewer: {review.reviewer} | CRITICAL={critical} HIGH={high}"]
         for c in review.comments:
             loc = f" ({c.location})" if c.location else ""
-            lines.append(f"- [{c.severity.value.upper()}]{loc} {c.message}")
+            # Truncate long messages to first line, max 120 chars
+            msg = c.message.split("\n")[0][:120]
+            lines.append(f"  - [{c.severity.value.upper()}]{loc} {msg}")
         return "\n".join(lines)
 
     _SECTION_PREFIX = "<!-- section: "

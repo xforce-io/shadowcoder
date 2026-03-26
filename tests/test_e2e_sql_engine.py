@@ -1006,9 +1006,9 @@ async def test_sql_engine_goal_driven(system):
     assert "开发步骤" in issue.sections
     assert "Dev Review" in issue.sections
 
-    # Print the full voyage log from .log.md
+    # Print the full voyage log from .log
     voyage_log = store.get_log(1)
-    assert len(voyage_log) > 0, "航海日志 should be present in .log.md"
+    assert len(voyage_log) > 0, "航海日志 should be present in .log"
     print(f"\n=== 航海日志 ===\n{voyage_log}\n===============")
 
     # Verify file integrity

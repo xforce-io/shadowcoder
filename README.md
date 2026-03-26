@@ -215,7 +215,7 @@ Testing is handled by the Engine's gate — not the agent. Adding a new agent me
 ```
 .shadowcoder/issues/
   0001.md          # Current state (requirements, design, implementation, test results)
-  0001.log.md      # Chronological timeline — every action timestamped
+  0001.log         # Chronological timeline — every action timestamped
   0001.versions/   # Archived outputs — design_r1.md, design_r2.md, develop_r1.md, ...
 ```
 

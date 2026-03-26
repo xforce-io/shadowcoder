@@ -37,10 +37,10 @@ python scripts/run_real.py ~/dev/github/<name> develop 1
 python scripts/run_real.py ~/dev/github/<name> info 1
 
 # Log milestones
-grep -E "Gate|Review|PASS|FAIL|总计|开始" ~/dev/github/<name>/.shadowcoder/issues/0001.log.md
+grep -E "Gate|Review|PASS|FAIL|总计|开始" ~/dev/github/<name>/.shadowcoder/issues/0001.log
 
 # Token usage
-grep "Usage:" ~/dev/github/<name>/.shadowcoder/issues/0001.log.md
+grep "Usage:" ~/dev/github/<name>/.shadowcoder/issues/0001.log
 
 # Worktree (actual code)
 ls ~/dev/github/<name>/.shadowcoder/worktrees/issue-1/
@@ -131,6 +131,6 @@ Mix agents freely: one for develop, another for review.
 
 ## Conventions
 
-- Issue files: `.shadowcoder/issues/NNNN.md` (current state) + `.log.md` (append-only timeline) + `.versions/` (snapshots)
+- Issue files: `.shadowcoder/issues/NNNN.md` (current state) + `.log` (append-only timeline) + `.versions/` (snapshots)
 - One `.shadowcoder` per git root — never nested
 - repo_path must be a git root directory
