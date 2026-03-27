@@ -478,27 +478,28 @@ def tmp_repo(tmp_path):
     return repo
 
 
-def test_init_adds_shadowcoder_to_root_gitignore(tmp_repo):
-    """init should add .shadowcoder/ to the repo root .gitignore."""
+def test_init_gitignore_covers_runtime_state(tmp_repo):
+    """init should ignore runtime state but allow config/roles to be committed."""
     from scripts.run_real import _init_project
     _init_project(str(tmp_repo))
-    gitignore = tmp_repo / ".gitignore"
+    gitignore = tmp_repo / ".shadowcoder" / ".gitignore"
     assert gitignore.exists()
-    assert ".shadowcoder/" in gitignore.read_text()
-
-
-def test_init_preserves_existing_root_gitignore(tmp_repo):
-    """init should append to existing .gitignore without duplicating."""
-    from scripts.run_real import _init_project
-    gitignore = tmp_repo / ".gitignore"
-    gitignore.write_text("node_modules/\n.env\n")
-    _init_project(str(tmp_repo))
     content = gitignore.read_text()
-    assert "node_modules/" in content  # preserved
-    assert ".env" in content           # preserved
-    assert ".shadowcoder/" in content  # added
+    # Runtime state must be ignored
+    assert "issues/" in content
+    assert "worktrees/" in content
+    assert "last_issue" in content
+    # config.yaml and roles/ must NOT be ignored
+    assert "config.yaml" not in content
+    assert "roles/" not in content
 
-    # Run again — should not duplicate
+
+def test_init_does_not_modify_repo_root_gitignore(tmp_repo):
+    """init must not add .shadowcoder/ to repo root .gitignore."""
+    from scripts.run_real import _init_project
+    root_gitignore = tmp_repo / ".gitignore"
+    root_gitignore.write_text("node_modules/\n")
     _init_project(str(tmp_repo))
-    content2 = gitignore.read_text()
-    assert content2.count(".shadowcoder/") == 1
+    content = root_gitignore.read_text()
+    assert ".shadowcoder/" not in content
+    assert "node_modules/" in content  # preserved
