@@ -154,7 +154,7 @@ Mix agents freely: one for develop, another for review. Agent types: `claude_cod
 ## Gate Behavior
 
 - Runs `cargo test` / `pytest` / `go test` / `npm test` (auto-detected via `language.py` or config `build.test_command`)
-- Runs acceptance script (`.acceptance.sh`) — must pass after develop
+- Runs acceptance script (`NNNN/acceptance.sh`) — must pass after develop
 - Verifies each acceptance test in `proposed_tests` was executed and passed
 - Skipped/ignored tests are detected and reported as gate failure
 - Falls back to running individual tests with force-include flags if heuristic is ambiguous
