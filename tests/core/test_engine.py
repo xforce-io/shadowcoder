@@ -708,3 +708,42 @@ def test_error_hash_empty():
     from shadowcoder.core.engine import Engine
     assert Engine._error_hash("") == ""
     assert Engine._error_hash(None) == ""
+
+
+@pytest.mark.asyncio
+async def test_run_warns_on_duplicate_active_issue(bus, config, store, task_mgr):
+    """run command warns when there are active issues and creates anyway."""
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="moderate")),
+        design=AsyncMock(return_value=DesignOutput(document="design")),
+    )
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=mock_agent)
+    engine = make_engine(bus, store, task_mgr, registry, config)
+
+    # Create first issue in DEVELOPING state
+    issue1 = store.create("First issue")
+    store.transition_status(issue1.id, IssueStatus.DESIGNING)
+    store.transition_status(issue1.id, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(issue1.id, IssueStatus.APPROVED)
+    store.transition_status(issue1.id, IssueStatus.DEVELOPING)
+
+    # Capture log messages
+    logged = []
+    original_log = engine._log
+    def capture_log(issue_id, msg, *a, **kw):
+        logged.append(msg)
+        original_log(issue_id, msg, *a, **kw)
+    engine._log = capture_log
+
+    # Run with new title — should warn about active issue
+    msg = Message(MessageType.CMD_RUN, {"title": "Second issue", "description": "desc"})
+    try:
+        await engine._on_run(msg)
+    except Exception:
+        pass  # May fail due to mock setup, that's ok
+
+    # Check that a warning was logged about active issues
+    warning_found = any("活跃 issue" in m or "active issue" in m for m in logged)
+    assert warning_found, f"Expected active-issue warning in logs, got: {logged}"

@@ -1120,6 +1120,19 @@ class Engine:
 
         # If title given, create issue first
         if "title" in msg.payload:
+            # Warn if there are active issues
+            active_statuses = {
+                IssueStatus.CREATED, IssueStatus.DESIGNING,
+                IssueStatus.DESIGN_REVIEW, IssueStatus.APPROVED,
+                IssueStatus.DEVELOPING, IssueStatus.DEV_REVIEW,
+            }
+            active = [i for i in self.issue_store.list_all()
+                      if i.status in active_statuses]
+            if active:
+                ids = ", ".join(f"#{i.id}({i.status.value})" for i in active)
+                self._log(0, f"Warning: 已有活跃 issue: {ids}. "
+                          f"如需继续已有 issue，请用 resume 命令。")
+
             await self._on_create(msg)
             issues = self.issue_store.list_all()
             issue_id = issues[-1].id
