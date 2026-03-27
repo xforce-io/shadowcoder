@@ -16,22 +16,25 @@ from shadowcoder.agents.types import ReviewComment, ReviewOutput, Severity
 
 
 class IssueStore:
-    _ISSUE_GLOB = "[0-9][0-9][0-9][0-9].md"
+    _ISSUE_GLOB = "[0-9][0-9][0-9][0-9]"
 
     def __init__(self, repo_path: str, config: Config):
         self.base = Path(repo_path) / config.get_issue_dir()
 
+    def _issue_dir(self, issue_id: int) -> Path:
+        return self.base / f"{issue_id:04d}"
+
     def _next_id(self) -> int:
-        existing = list(self.base.glob(self._ISSUE_GLOB))
+        existing = [f for f in self.base.glob(self._ISSUE_GLOB) if f.is_dir()]
         if not existing:
             return 1
-        return max(int(f.stem) for f in existing) + 1
+        return max(int(f.name) for f in existing) + 1
 
     def _log_path(self, issue_id: int) -> Path:
-        return self.base / f"{issue_id:04d}.log"
+        return self._issue_dir(issue_id) / "issue.log"
 
     def _feedback_path(self, issue_id: int) -> Path:
-        return self.base / f"{issue_id:04d}.feedback.json"
+        return self._issue_dir(issue_id) / "feedback.json"
 
     def load_feedback(self, issue_id: int) -> dict:
         path = self._feedback_path(issue_id)
@@ -52,7 +55,7 @@ class IssueStore:
         path.write_text(json.dumps(feedback, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _versions_dir(self, issue_id: int) -> Path:
-        return self.base / f"{issue_id:04d}.versions"
+        return self._issue_dir(issue_id) / "versions"
 
     def save_version(self, issue_id: int, action: str, round_num: int, content: str) -> str:
         """Save a versioned snapshot of agent output. Returns the filename."""
@@ -83,7 +86,7 @@ class IssueStore:
         return issue
 
     def get(self, issue_id: int) -> Issue:
-        path = self.base / f"{issue_id:04d}.md"
+        path = self._issue_dir(issue_id) / "issue.md"
         if not path.exists():
             raise FileNotFoundError(f"Issue {issue_id} not found: {path}")
         post = frontmatter.load(str(path))
@@ -102,7 +105,10 @@ class IssueStore:
     def list_all(self) -> list[Issue]:
         if not self.base.exists():
             return []
-        return [self.get(int(f.stem)) for f in sorted(self.base.glob(self._ISSUE_GLOB))]
+        dirs = sorted(
+            f for f in self.base.glob(self._ISSUE_GLOB) if f.is_dir()
+        )
+        return [self.get(int(d.name)) for d in dirs]
 
     def list_by_status(self, status: IssueStatus) -> list[Issue]:
         return [i for i in self.list_all() if i.status == status]
@@ -184,7 +190,8 @@ class IssueStore:
         return None
 
     def _save(self, issue: Issue) -> None:
-        self.base.mkdir(parents=True, exist_ok=True)
+        issue_dir = self._issue_dir(issue.id)
+        issue_dir.mkdir(parents=True, exist_ok=True)
         post = frontmatter.Post(
             content=self._sections_to_markdown(issue.sections),
             id=issue.id,
@@ -196,7 +203,7 @@ class IssueStore:
             tags=issue.tags,
             assignee=issue.assignee,
         )
-        path = self.base / f"{issue.id:04d}.md"
+        path = issue_dir / "issue.md"
         path.write_text(frontmatter.dumps(post), encoding="utf-8")
 
     @staticmethod
