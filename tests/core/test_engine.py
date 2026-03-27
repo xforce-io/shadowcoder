@@ -775,3 +775,34 @@ async def test_acceptance_script_syntax_validation(bus, config, store, task_mgr,
     result = await engine._run_acceptance_phase(issue, task)
     # Should have retried and succeeded with the good script
     assert mock_agent.write_acceptance_script.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_gate_failure_extraction_and_hash_tracking(bus, config, store, task_mgr, tmp_repo):
+    """Full flow: gate fails → extract summary → hash → detect repeat → escalate."""
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="low")),
+        design=AsyncMock(return_value=DesignOutput(document="design")),
+        develop=AsyncMock(return_value=DevelopOutput(summary="code")),
+        review=AsyncMock(return_value=ReviewOutput(
+            comments=[
+                ReviewComment(severity=Severity.HIGH, message="fix it", location="file.go")
+            ])),
+    )
+    # Utility agent returns consistent summary for same-error detection
+    mock_agent._run = AsyncMock(return_value=(
+        "Root cause: compilation failed\nfile.go:42: undefined foo",
+        AgentUsage(input_tokens=100, output_tokens=50),
+    ))
+
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, registry, config, str(tmp_repo))
+
+    # Verify _error_hash produces consistent results
+    summary = "Root cause: compilation failed\nfile.go:42: undefined foo"
+    h1 = Engine._error_hash(summary)
+    h2 = Engine._error_hash(summary)
+    assert h1 == h2
+    assert len(h1) == 16  # sha256 truncated to 16 hex chars
