@@ -228,7 +228,7 @@ async def test_e2e_happy_path(e2e_system):
     }))
 
     # Verify issue file was created on disk
-    issue_file = repo / ".shadowcoder" / "issues" / "0001.md"
+    issue_file = repo / ".shadowcoder" / "issues" / "0001" / "issue.md"
     assert issue_file.exists(), f"Issue file not created at {issue_file}"
 
     issue = store.get(1)
@@ -446,7 +446,7 @@ async def test_e2e_issue_file_integrity(e2e_system):
 
     # Read raw file and verify structure
     import frontmatter
-    issue_file = repo / ".shadowcoder" / "issues" / "0001.md"
+    issue_file = repo / ".shadowcoder" / "issues" / "0001" / "issue.md"
     post = frontmatter.load(str(issue_file))
 
     # Frontmatter checks

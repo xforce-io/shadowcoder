@@ -1032,7 +1032,7 @@ async def test_sql_engine_goal_driven(system):
     print(f"\n=== 航海日志 ===\n{voyage_log}\n===============")
 
     # Verify file integrity
-    issue_file = repo / ".shadowcoder" / "issues" / "0001.md"
+    issue_file = repo / ".shadowcoder" / "issues" / "0001" / "issue.md"
     post = fm.load(str(issue_file))
     assert post["status"] == "done"
 

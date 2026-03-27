@@ -630,7 +630,7 @@ async def test_real_task_full_lifecycle(system):
     assert issue.status == IssueStatus.CREATED
     assert issue.title == "Implement Markdown Link Checker CLI"
 
-    issue_file = repo / ".shadowcoder" / "issues" / "0001.md"
+    issue_file = repo / ".shadowcoder" / "issues" / "0001" / "issue.md"
     assert issue_file.exists()
 
     # ===== DESIGN (2 rounds: reject → approve) =====
