@@ -1087,7 +1087,7 @@ class TestVersionArchive:
         await bus.publish(Message(MessageType.CMD_CREATE_ISSUE, {"title": "Version test"}))
         await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
 
-        versions_dir = repo / ".shadowcoder" / "issues" / "0001.versions"
+        versions_dir = repo / ".shadowcoder" / "issues" / "0001" / "versions"
         assert versions_dir.exists()
         assert (versions_dir / "design_r1.md").exists()
         assert (versions_dir / "design_r2.md").exists()
@@ -1834,3 +1834,111 @@ class TestLastIssue:
             {"issue_id": issue.id}))
         issue = env["store"].get(issue.id)
         assert issue.status == IssueStatus.DONE
+
+
+# ===========================================================================
+# 20. Confirm acceptance before develop
+# ===========================================================================
+
+
+class TestConfirmAcceptance:
+    """When confirm_acceptance is enabled, block after acceptance xfail for human review."""
+
+    @pytest.fixture
+    def confirm_config(self, tmp_path):
+        config_path = tmp_path / "config_confirm.yaml"
+        config_path.write_text("""\
+clouds:
+  local:
+    env: {}
+models:
+  default-model:
+    cloud: local
+    model: sonnet
+agents:
+  claude-code:
+    type: claude_code
+    model: default-model
+dispatch:
+  design: claude-code
+  develop: claude-code
+  design_review: [claude-code]
+  develop_review: [claude-code]
+review_policy:
+  pass_threshold: no_high_or_critical
+  max_review_rounds: 3
+  confirm_acceptance: true
+issue_store:
+  dir: .shadowcoder/issues
+worktree:
+  base_dir: .shadowcoder/worktrees
+""")
+        return Config(str(config_path))
+
+    @pytest.fixture
+    def confirm_system(self, integ_repo, confirm_config, agent):
+        AgentRegistry.register("claude_code", lambda cfg: agent)
+        bus = MessageBus()
+        wt_manager = WorktreeManager(confirm_config.get_worktree_dir())
+        task_manager = TaskManager(wt_manager)
+        store = IssueStore(str(integ_repo), confirm_config)
+        registry = AgentRegistry(confirm_config)
+        registry._instances["claude-code"] = agent
+        engine = Engine(bus, store, task_manager, registry, confirm_config, str(integ_repo))
+        engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+        engine._get_code_diff = AsyncMock(return_value="diff --git a/foo.py")
+        # Do NOT mock _run_acceptance_phase — let it run (but mock the agent)
+        return {
+            "bus": bus, "engine": engine, "store": store,
+            "task_manager": task_manager, "agent": agent,
+            "repo": integ_repo, "config": confirm_config,
+        }
+
+    async def test_blocks_after_acceptance_xfail(self, confirm_system):
+        """Acceptance xfail confirmed → BLOCKED, not straight to develop."""
+        env = confirm_system
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"title": "Confirm test"}))
+        issue = env["store"].list_all()[-1]
+        assert issue.status == IssueStatus.BLOCKED
+
+        # Acceptance script should exist
+        acc_path = env["engine"]._acceptance_script_path(issue.id)
+        assert acc_path.exists()
+
+        # No develop calls yet
+        assert len(env["agent"].develop_calls) == 0
+
+    async def test_resume_after_acceptance_skips_regeneration(self, confirm_system):
+        """Resume after acceptance BLOCKED → develop runs, acceptance not regenerated."""
+        env = confirm_system
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"title": "Resume test"}))
+        issue = env["store"].list_all()[-1]
+        assert issue.status == IssueStatus.BLOCKED
+
+        # Record acceptance call count before resume
+        acc_calls_before = len(env["agent"].preflight_calls)
+
+        # Resume → should enter develop loop (skipping acceptance regeneration)
+        await env["bus"].publish(Message(MessageType.CMD_RESUME,
+            {"issue_id": issue.id}))
+        issue = env["store"].get(issue.id)
+        assert issue.status == IssueStatus.DONE
+
+        # Develop should have been called
+        assert len(env["agent"].develop_calls) >= 1
+
+    async def test_run_resumes_blocked_acceptance(self, confirm_system):
+        """run on acceptance-BLOCKED issue resumes develop, not design."""
+        env = confirm_system
+        await env["bus"].publish(Message(MessageType.CMD_RUN, {"title": "Run resume test"}))
+        issue = env["store"].list_all()[-1]
+        assert issue.status == IssueStatus.BLOCKED
+
+        # Run again — should resume develop, not restart design
+        design_calls_before = len(env["agent"].design_calls)
+        await env["bus"].publish(Message(MessageType.CMD_RUN,
+            {"issue_id": issue.id}))
+        issue = env["store"].get(issue.id)
+        assert issue.status == IssueStatus.DONE
+        # Design should NOT have been re-run
+        assert len(env["agent"].design_calls) == design_calls_before

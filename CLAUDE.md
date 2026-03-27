@@ -163,7 +163,7 @@ Mix agents freely: one for develop, another for review. Agent types: `claude_cod
 
 ## Conventions
 
-- Issue files: `.shadowcoder/issues/NNNN.md` (current state) + `.log` (append-only timeline) + `.feedback.json` (feedback tracking) + `.acceptance.sh` (test script) + `.versions/` (snapshots)
+- Issue files: `.shadowcoder/issues/NNNN/issue.md` (current state) + `issue.log` (append-only timeline) + `feedback.json` (feedback tracking) + `acceptance.sh` (test script) + `versions/` (snapshots)
 - Role prompts: `data/roles/<role>/soul.md` + `instructions.md`, customizable at `.shadowcoder/roles/` (project) or `~/.shadowcoder/roles/` (user)
 - One `.shadowcoder` per git root — never nested
 - repo_path must be a git root directory

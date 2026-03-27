@@ -676,7 +676,7 @@ class Engine:
 
     def _acceptance_script_path(self, issue_id: int) -> Path:
         """Path for the acceptance test script."""
-        return Path(self.issue_store.base) / f"{issue_id:04d}.acceptance.sh"
+        return Path(self.issue_store.base) / f"{issue_id:04d}" / "acceptance.sh"
 
     async def _run_acceptance_phase(self, issue, task) -> bool:
         """Write acceptance script and verify it FAILS on unchanged code.
@@ -754,9 +754,22 @@ class Engine:
         proposed_tests = self._get_gate_tests(issue.id)
 
         # --- Acceptance script: write and verify it fails ---
-        acceptance_ok = await self._run_acceptance_phase(issue, task)
-        if not acceptance_ok:
-            return
+        acceptance_path = self._acceptance_script_path(issue.id)
+        if acceptance_path.exists():
+            self._log(issue.id, "Acceptance script 已存在，跳过生成阶段")
+        else:
+            acceptance_ok = await self._run_acceptance_phase(issue, task)
+            if not acceptance_ok:
+                return
+            # Optionally pause for human review before entering develop loop
+            if self.config.get_confirm_acceptance():
+                self._log(issue.id,
+                    "Acceptance tests xfail 确认 ✓ → BLOCKED，等待人类确认")
+                self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+                await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+                    {"issue_id": issue.id, "status": "blocked",
+                     "reason": "acceptance_confirmed"}))
+                return
 
         try:
             gate_fail_count = 0
@@ -1070,8 +1083,21 @@ class Engine:
             issue.status = IssueStatus.APPROVED
             self.issue_store.save(issue)
 
+        # BLOCKED → infer which phase to resume
+        if issue.status == IssueStatus.BLOCKED:
+            stage = self._infer_blocked_stage(issue)
+            if stage == "develop":
+                self._log(issue_id, "run 恢复: BLOCKED → 继续 develop")
+                issue.status = IssueStatus.APPROVED
+                self.issue_store.save(issue)
+            else:
+                self._log(issue_id, "run 恢复: BLOCKED → 重跑 design")
+                issue.status = IssueStatus.CREATED
+                self.issue_store.save(issue)
+            issue = self.issue_store.get(issue_id)
+
         # Design phase
-        if issue.status in (IssueStatus.CREATED, IssueStatus.BLOCKED):
+        if issue.status == IssueStatus.CREATED:
             await self._on_design(Message(MessageType.CMD_DESIGN, {"issue_id": issue_id}))
             issue = self.issue_store.get(issue_id)
             if issue.status == IssueStatus.BLOCKED:
@@ -1096,7 +1122,10 @@ class Engine:
         """Infer which stage was running based on issue sections."""
         if "Dev Review" in issue.sections:
             return "develop"
-        if "开发" in issue.sections:
+        if "开发" in issue.sections or "开发步骤" in issue.sections:
+            return "develop"
+        # Acceptance confirmed but develop not started yet — still develop stage
+        if self._acceptance_script_path(issue.id).exists():
             return "develop"
         if "Design Review" in issue.sections:
             return "design"
