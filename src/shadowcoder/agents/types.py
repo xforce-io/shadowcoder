@@ -95,6 +95,17 @@ class AcceptanceOutput:
     usage: AgentUsage | None = None
 
 
+@dataclass
+class PreparedCall:
+    """Snapshot of a fully-assembled agent call, before execution."""
+    action: str
+    system_prompt: str
+    prompt: str
+    cwd: str | None = None
+    session_id: str | None = None
+    resume_id: str | None = None
+
+
 class AgentActionFailed(Exception):
     """Agent tried but could not complete the action."""
     def __init__(self, message: str, partial_output: str = ""):

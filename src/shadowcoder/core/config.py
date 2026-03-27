@@ -173,3 +173,9 @@ class Config:
 
     def get_gate_mode(self) -> str:
         return self._data.get("gate", {}).get("mode", "standard")
+
+    def get_dump_agent_context(self) -> bool:
+        return self._data.get("logging", {}).get("dump_agent_context", False)
+
+    def get_dump_agent_context_max_chars(self) -> int | None:
+        return self._data.get("logging", {}).get("dump_agent_context_max_chars")

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from shadowcoder.agents.types import (
     AcceptanceOutput, AgentRequest, AgentUsage, DesignOutput, DevelopOutput,
-    PreflightOutput, ReviewOutput, TestCase, ReviewComment, Severity,
+    PreparedCall, PreflightOutput, ReviewOutput, TestCase, ReviewComment, Severity,
 )
 
 logger = logging.getLogger(__name__)
@@ -226,14 +226,76 @@ class BaseAgent(ABC):
         return comments
 
     # ------------------------------------------------------------------ #
+    #  Prepare methods — build the full call without executing            #
+    # ------------------------------------------------------------------ #
+
+    def prepare_preflight(self, request: AgentRequest) -> PreparedCall:
+        context = self._build_context(request)
+        system = self._load_system_prompt("preflight")
+        prompt = f"{context}\n\nAssess feasibility. Be brief and direct."
+        return PreparedCall(
+            action="preflight", system_prompt=system, prompt=prompt,
+            cwd=request.context.get("worktree_path"))
+
+    def prepare_design(self, request: AgentRequest) -> PreparedCall:
+        context = self._build_context(request)
+        system = self._load_system_prompt("designer")
+        prompt = f"{context}\n\nProduce the technical design for this issue."
+        return PreparedCall(
+            action="design", system_prompt=system, prompt=prompt,
+            cwd=request.context.get("worktree_path"))
+
+    def prepare_develop(self, request: AgentRequest) -> PreparedCall:
+        context = self._build_context(request)
+        system = self._load_system_prompt("developer")
+        prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
+        return PreparedCall(
+            action="develop", system_prompt=system, prompt=prompt,
+            cwd=request.context.get("worktree_path"),
+            session_id=request.context.get("session_id"),
+            resume_id=request.context.get("resume_id"))
+
+    def prepare_review(self, request: AgentRequest) -> PreparedCall:
+        is_develop_review = bool(request.context.get("code_diff"))
+        if is_develop_review:
+            context = self._build_review_context(request)
+            system = self._load_system_prompt("code_reviewer")
+        else:
+            context = self._build_context(request)
+            system = self._load_system_prompt("design_reviewer")
+        prompt = f"{context}\n\nReview the current design/implementation against requirements."
+        return PreparedCall(
+            action="review", system_prompt=system, prompt=prompt,
+            cwd=request.context.get("worktree_path"))
+
+    def prepare_write_acceptance_script(self, request: AgentRequest) -> PreparedCall:
+        context = self._build_context(request)
+        system = self._load_system_prompt("acceptance_writer")
+        pre_gate_failure = request.context.get("pre_gate_failure", "")
+        if pre_gate_failure:
+            prompt = (
+                f"{context}\n\n"
+                f"IMPORTANT — your previous acceptance script PASSED on unchanged code:\n"
+                f"{pre_gate_failure}\n\n"
+                f"Analyze why it passed and write a STRONGER script."
+            )
+        else:
+            prompt = (
+                f"{context}\n\n"
+                f"Write an acceptance test script (bash) for this issue. "
+                f"The script must FAIL on the current code and PASS after the fix/feature."
+            )
+        return PreparedCall(
+            action="write_acceptance_script", system_prompt=system, prompt=prompt,
+            cwd=request.context.get("worktree_path"))
+
+    # ------------------------------------------------------------------ #
     #  Concrete action methods (shared orchestration logic)               #
     # ------------------------------------------------------------------ #
 
     async def preflight(self, request: AgentRequest) -> PreflightOutput:
-        context = self._build_context(request)
-        system = self._load_system_prompt("preflight")
-        prompt = f"{context}\n\nAssess feasibility. Be brief and direct."
-        result, usage = await self._run(prompt, cwd=request.context.get("worktree_path"), system_prompt=system)
+        call = self.prepare_preflight(request)
+        result, usage = await self._run(call.prompt, cwd=call.cwd, system_prompt=call.system_prompt)
         try:
             data = self._extract_json(result)
             return PreflightOutput(
@@ -247,43 +309,22 @@ class BaseAgent(ABC):
                                    risks=["Could not assess — preflight parse failed"], usage=usage)
 
     async def design(self, request: AgentRequest) -> DesignOutput:
-        cwd = request.context.get("worktree_path")
-        context = self._build_context(request)
-        system = self._load_system_prompt("designer")
-        prompt = f"{context}\n\nProduce the technical design for this issue."
-        result, usage = await self._run(prompt, cwd=cwd, system_prompt=system)
+        call = self.prepare_design(request)
+        result, usage = await self._run(call.prompt, cwd=call.cwd, system_prompt=call.system_prompt)
         test_command = self._extract_test_command(result)
         return DesignOutput(document=result, test_command=test_command, usage=usage)
 
     async def develop(self, request: AgentRequest) -> DevelopOutput:
-        cwd = request.context.get("worktree_path")
-        context = self._build_context(request)
-        system = self._load_system_prompt("developer")
-        prompt = f"{context}\n\nImplement the code based on the design. Write actual files."
-        # Session semantics: engine passes session_id or resume_id via context
-        session_id = request.context.get("session_id")
-        resume_id = request.context.get("resume_id")
+        call = self.prepare_develop(request)
         result, usage = await self._run(
-            prompt, cwd=cwd, system_prompt=system,
-            session_id=session_id, resume_id=resume_id)
-        files_changed = await self._get_files_changed(cwd or "")
+            call.prompt, cwd=call.cwd, system_prompt=call.system_prompt,
+            session_id=call.session_id, resume_id=call.resume_id)
+        files_changed = await self._get_files_changed(call.cwd or "")
         return DevelopOutput(summary=result, files_changed=files_changed, usage=usage)
 
     async def review(self, request: AgentRequest) -> ReviewOutput:
-        cwd = request.context.get("worktree_path")
-        # Use diff-aware context if code_diff provided (develop review),
-        # otherwise use standard context (design review)
-        is_develop_review = bool(request.context.get("code_diff"))
-        if is_develop_review:
-            context = self._build_review_context(request)
-            system = self._load_system_prompt("code_reviewer")
-        else:
-            context = self._build_context(request)
-            system = self._load_system_prompt("design_reviewer")
-
-        prompt = f"{context}\n\nReview the current design/implementation against requirements."
-
-        result, usage = await self._run(prompt, cwd=cwd, system_prompt=system)
+        call = self.prepare_review(request)
+        result, usage = await self._run(call.prompt, cwd=call.cwd, system_prompt=call.system_prompt)
 
         # Parse JSON from the response
         try:
@@ -324,26 +365,8 @@ class BaseAgent(ABC):
             return ReviewOutput(comments=comments, reviewer=self.config.get("type", "unknown"), usage=usage)
 
     async def write_acceptance_script(self, request: AgentRequest) -> AcceptanceOutput:
-        cwd = request.context.get("worktree_path")
-        context = self._build_context(request)
-        system = self._load_system_prompt("acceptance_writer")
-
-        pre_gate_failure = request.context.get("pre_gate_failure", "")
-        if pre_gate_failure:
-            prompt = (
-                f"{context}\n\n"
-                f"IMPORTANT — your previous acceptance script PASSED on unchanged code:\n"
-                f"{pre_gate_failure}\n\n"
-                f"Analyze why it passed and write a STRONGER script."
-            )
-        else:
-            prompt = (
-                f"{context}\n\n"
-                f"Write an acceptance test script (bash) for this issue. "
-                f"The script must FAIL on the current code and PASS after the fix/feature."
-            )
-
-        result, usage = await self._run(prompt, cwd=cwd, system_prompt=system)
+        call = self.prepare_write_acceptance_script(request)
+        result, usage = await self._run(call.prompt, cwd=call.cwd, system_prompt=call.system_prompt)
         # Extract script: strip markdown fences if present
         script = result.strip()
         if script.startswith("```"):

@@ -7,7 +7,7 @@ import re as _re
 import uuid
 from pathlib import Path
 
-from shadowcoder.agents.types import AgentRequest, AgentActionFailed, AgentUsage
+from shadowcoder.agents.types import AgentRequest, AgentActionFailed, AgentUsage, PreparedCall
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
@@ -92,6 +92,64 @@ class Engine:
 
         return "\n".join(lines)
 
+    def _dump_agent_context(
+        self,
+        issue_id: int,
+        phase: str,
+        round_num: int,
+        action: str,
+        agent_name: str,
+        agent,
+        prepared_call,
+    ) -> None:
+        """Dump the fully-assembled agent input to a JSON file for debugging."""
+        if not self.config.get_dump_agent_context():
+            return
+
+        import json
+        from datetime import datetime, timezone
+
+        max_chars = self.config.get_dump_agent_context_max_chars()
+        system_prompt = prepared_call.system_prompt
+        prompt = prepared_call.prompt
+        if max_chars:
+            system_prompt = system_prompt[:max_chars]
+            prompt = prompt[:max_chars]
+
+        snapshot = {
+            "issue_id": issue_id,
+            "phase": phase,
+            "round": round_num,
+            "action": action,
+            "agent_name": agent_name,
+            "agent_type": agent.config.get("type", "unknown"),
+            "model": agent._get_model(),
+            "cwd": prepared_call.cwd,
+            "permission_mode": agent._get_permission_mode(),
+            "session_id": prepared_call.session_id,
+            "resume_id": prepared_call.resume_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "system_prompt": system_prompt,
+            "prompt": prompt,
+            "system_prompt_chars": len(prepared_call.system_prompt),
+            "prompt_chars": len(prepared_call.prompt),
+        }
+
+        issue_dir = Path(self.repo_path) / self.config.get_issue_dir() / f"{issue_id:04d}"
+        prompts_dir = issue_dir / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{action}_r{round_num}_{agent_name}.json"
+        out_path = prompts_dir / filename
+        try:
+            out_path.write_text(
+                json.dumps(snapshot, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.debug("Dumped agent context to %s", out_path)
+        except Exception:
+            logger.warning("Failed to dump agent context to %s", out_path, exc_info=True)
+
     @staticmethod
     def _truncate_output(output: str, max_chars: int = 3000) -> str:
         """Truncate long output preserving head (compile errors) and tail (summary)."""
@@ -154,11 +212,14 @@ class Engine:
             "Output only the key error lines (3-10 lines), nothing else.\n\n"
             f"```\n{raw_output[-8000:]}\n```"
         )
+        system_prompt = "You are a test output analyzer. Extract root cause errors concisely."
+        if issue_id is not None:
+            self._dump_agent_context(
+                issue_id, "utility", 0, "utility",
+                utility_agent_name, agent,
+                PreparedCall(action="utility", system_prompt=system_prompt, prompt=prompt))
         try:
-            summary, usage = await agent._run(
-                prompt,
-                system_prompt="You are a test output analyzer. Extract root cause errors concisely.",
-            )
+            summary, usage = await agent._run(prompt, system_prompt=system_prompt)
             if issue_id is not None and usage:
                 self._track_usage(issue_id, usage, phase="utility")
             return summary.strip() if summary.strip() else self._truncate_output(raw_output)
@@ -560,7 +621,7 @@ class Engine:
         return desc
 
     async def _run_all_reviewers(self, issue, task, action, review_section_key,
-                                  code_diff: str = ""):
+                                  code_diff: str = "", round_num: int = 0):
         reviewer_names = self.config.get_agent_for_phase(f"{action}_review")
         failed_reviewers = []
         last_review = None
@@ -576,6 +637,10 @@ class Engine:
                 context["code_diff"] = code_diff
             request = AgentRequest(action="review", issue=issue, context=context)
             try:
+                self._dump_agent_context(
+                    issue.id, f"{action}_review", round_num,
+                    f"{action}_review", rname, reviewer,
+                    reviewer.prepare_review(request))
                 review = await self._review_with_retry(reviewer, request)
                 self._track_usage(issue.id, review.usage, phase=f"{action}_review")
                 self.issue_store.append_review(issue.id, review_section_key, review)
@@ -612,7 +677,8 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
-                agent = self.agents.get(self.config.get_agent_for_phase("design"))
+                agent_name = self.config.get_agent_for_phase("design")
+                agent = self.agents.get(agent_name)
                 latest_review = self._get_latest_review(issue.id, review_section_key)
                 request = AgentRequest(action="design", issue=issue,
                     context={
@@ -621,6 +687,9 @@ class Engine:
                         "feedback_summary": self._format_feedback_for_agent(issue.id),
                     })
 
+                self._dump_agent_context(
+                    issue.id, "design", round_num, "design",
+                    agent_name, agent, agent.prepare_design(request))
                 output = await agent.design(request)
                 content = output.document
 
@@ -654,7 +723,7 @@ class Engine:
                 self.issue_store.transition_status(issue.id, IssueStatus.DESIGN_REVIEW)
                 issue = self.issue_store.get(issue.id)
 
-                last_review = await self._run_all_reviewers(issue, task, "design", review_section_key)
+                last_review = await self._run_all_reviewers(issue, task, "design", review_section_key, round_num=round_num)
                 if last_review:
                     self._update_feedback(issue.id, last_review, round_num, is_design_review=True)
 
@@ -752,6 +821,10 @@ class Engine:
 
             self._log(issue.id, f"Acceptance script 生成 (attempt {attempt}/{max_attempts})")
             try:
+                self._dump_agent_context(
+                    issue.id, "acceptance", attempt, "acceptance",
+                    acc_agent_name, acc_agent,
+                    acc_agent.prepare_write_acceptance_script(request))
                 output = await acc_agent.write_acceptance_script(request)
             except Exception as e:
                 self._log(issue.id, f"Acceptance writer 异常: {e}")
@@ -846,7 +919,8 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
-                agent = self.agents.get(self.config.get_agent_for_phase("develop"))
+                develop_agent_name = self.config.get_agent_for_phase("develop")
+                agent = self.agents.get(develop_agent_name)
                 latest_review = self._get_latest_review(issue.id, review_section_key)
                 ctx_dict = {
                     "worktree_path": task.worktree_path,
@@ -862,6 +936,9 @@ class Engine:
                     ctx_dict["session_id"] = current_session_id
                 request = AgentRequest(action="develop", issue=issue, context=ctx_dict)
 
+                self._dump_agent_context(
+                    issue.id, "develop", round_num, "develop",
+                    develop_agent_name, agent, agent.prepare_develop(request))
                 output = await agent.develop(request)
                 use_resume = True
                 content = output.summary
@@ -986,7 +1063,8 @@ class Engine:
                         logger.warning("Could not get code diff: %s", ex)
 
                 last_review = await self._run_all_reviewers(
-                    issue, task, "develop", review_section_key, code_diff=code_diff)
+                    issue, task, "develop", review_section_key,
+                    code_diff=code_diff, round_num=round_num)
                 if last_review:
                     self._update_feedback(issue.id, last_review, round_num, is_design_review=False)
                     proposed_tests = self._get_gate_tests(issue.id)
