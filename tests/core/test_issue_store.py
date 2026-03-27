@@ -192,3 +192,32 @@ def test_sections_roundtrip(store):
     issue = store.get(1)
     assert issue.sections["需求分析"] == "Analysis content"
     assert issue.sections["设计"] == "Design content"
+
+
+def test_issue_files_in_subdirectory(store):
+    """issue.md must live inside NNNN/ subdirectory, not at issues/ root."""
+    store.create("Test")
+    issue_dir = store.base / "0001"
+    assert issue_dir.is_dir()
+    assert (issue_dir / "issue.md").exists()
+
+
+def test_log_in_subdirectory(store):
+    """issue.log must live inside NNNN/ subdirectory."""
+    store.create("Test")
+    store.append_log(1, "entry")
+    assert (store.base / "0001" / "issue.log").exists()
+
+
+def test_feedback_in_subdirectory(store):
+    """feedback.json must live inside NNNN/ subdirectory."""
+    store.create("Test")
+    store.save_feedback(1, {"items": []})
+    assert (store.base / "0001" / "feedback.json").exists()
+
+
+def test_versions_in_subdirectory(store):
+    """versions/ must live inside NNNN/ subdirectory."""
+    store.create("Test")
+    store.save_version(1, "design", 1, "content")
+    assert (store.base / "0001" / "versions" / "design_r1.md").exists()
