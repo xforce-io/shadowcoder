@@ -1,15 +1,14 @@
 """Tests for the dump_agent_context debug feature."""
-import json
+import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
+import yaml
 import pytest
 
 from shadowcoder.agents.base import BaseAgent
-from shadowcoder.agents.types import (
-    AgentRequest, AgentUsage, PreparedCall,
-)
+from shadowcoder.agents.types import AgentRequest, AgentUsage, PreparedCall
 from shadowcoder.agents.registry import AgentRegistry
 from shadowcoder.core.bus import MessageBus
 from shadowcoder.core.config import Config
@@ -79,6 +78,23 @@ def _make_engine(repo_path, dump_enabled=False, max_chars=None):
     return Engine(bus, None, None, None, config, str(repo_path))
 
 
+def _parse_dump(path: Path) -> tuple[dict, str, str]:
+    """Parse a dump markdown file. Returns (frontmatter_dict, system_prompt, prompt)."""
+    text = path.read_text(encoding="utf-8")
+    m = re.match(r'^---\n(.+?)\n---\n', text, re.DOTALL)
+    assert m, "No YAML frontmatter found"
+    meta = yaml.safe_load(m.group(1))
+    body = text[m.end():]
+    parts = re.split(r'^## ', body, flags=re.MULTILINE)
+    sys_prompt = prompt = ""
+    for part in parts:
+        if part.startswith("System Prompt\n"):
+            sys_prompt = part[len("System Prompt\n"):].strip()
+        elif part.startswith("Prompt\n"):
+            prompt = part[len("Prompt\n"):].strip()
+    return meta, sys_prompt, prompt
+
+
 class TestDumpDisabled:
     def test_no_files_when_disabled(self, repo_path, agent):
         engine = _make_engine(repo_path, dump_enabled=False)
@@ -96,7 +112,7 @@ class TestDumpDisabled:
 
 
 class TestDumpEnabled:
-    def test_writes_json_file(self, repo_path, agent):
+    def test_writes_md_file(self, repo_path, agent):
         engine = _make_engine(repo_path, dump_enabled=True)
         issue = _make_issue()
 
@@ -109,9 +125,9 @@ class TestDumpEnabled:
 
         prompts_dir = Path(repo_path) / ".shadowcoder" / "issues" / f"{issue.id:04d}" / "prompts"
         assert prompts_dir.exists()
-        files = list(prompts_dir.glob("*.json"))
+        files = list(prompts_dir.glob("*.md"))
         assert len(files) == 1
-        assert files[0].name == "design_r1_test-agent.json"
+        assert files[0].name == "design_r1_test-agent.md"
 
     def test_file_contains_required_fields(self, repo_path, agent):
         engine = _make_engine(repo_path, dump_enabled=True)
@@ -126,26 +142,25 @@ class TestDumpEnabled:
             issue.id, "design", 2, "design", "test-agent", agent, call)
 
         out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "design_r2_test-agent.json")
-        data = json.loads(out_path.read_text())
+                    / f"{issue.id:04d}" / "prompts" / "design_r2_test-agent.md")
+        meta, sys_prompt, prompt = _parse_dump(out_path)
 
-        assert data["issue_id"] == issue.id
-        assert data["phase"] == "design"
-        assert data["round"] == 2
-        assert data["action"] == "design"
-        assert data["agent_name"] == "test-agent"
-        assert data["agent_type"] == "claude_code"
-        assert data["model"] == "test-model"
-        assert data["cwd"] == str(repo_path)
-        assert data["permission_mode"] == "auto"
-        assert data["session_id"] is None
-        assert data["resume_id"] is None
-        assert "timestamp" in data
-        assert "system_prompt" in data
-        assert "prompt" in data
-        assert isinstance(data["system_prompt_chars"], int)
-        assert isinstance(data["prompt_chars"], int)
-        assert data["prompt_chars"] == len(call.prompt)
+        assert meta["issue_id"] == issue.id
+        assert meta["phase"] == "design"
+        assert meta["round"] == 2
+        assert meta["action"] == "design"
+        assert meta["agent_name"] == "test-agent"
+        assert meta["agent_type"] == "claude_code"
+        assert meta["model"] == "test-model"
+        assert meta["cwd"] == str(repo_path)
+        assert meta["permission_mode"] == "auto"
+        assert meta["session_id"] is None
+        assert meta["resume_id"] is None
+        assert "timestamp" in meta
+        assert isinstance(meta["system_prompt_chars"], int)
+        assert isinstance(meta["prompt_chars"], int)
+        assert meta["prompt_chars"] == len(call.prompt)
+        assert "Issue: test (#1)" in prompt
 
     def test_develop_includes_session_id(self, repo_path, agent):
         engine = _make_engine(repo_path, dump_enabled=True)
@@ -163,10 +178,10 @@ class TestDumpEnabled:
             issue.id, "develop", 1, "develop", "test-agent", agent, call)
 
         out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "develop_r1_test-agent.json")
-        data = json.loads(out_path.read_text())
-        assert data["session_id"] == "sess-123"
-        assert data["resume_id"] is None
+                    / f"{issue.id:04d}" / "prompts" / "develop_r1_test-agent.md")
+        meta, _, _ = _parse_dump(out_path)
+        assert meta["session_id"] == "sess-123"
+        assert meta["resume_id"] is None
 
     def test_review_action_naming(self, repo_path, agent):
         engine = _make_engine(repo_path, dump_enabled=True)
@@ -182,7 +197,7 @@ class TestDumpEnabled:
             "test-agent", agent, call)
 
         out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "design_review_r1_test-agent.json")
+                    / f"{issue.id:04d}" / "prompts" / "design_review_r1_test-agent.md")
         assert out_path.exists()
 
 
@@ -202,14 +217,14 @@ class TestTruncation:
             issue.id, "design", 1, "design", "test-agent", agent, call)
 
         out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "design_r1_test-agent.json")
-        data = json.loads(out_path.read_text())
+                    / f"{issue.id:04d}" / "prompts" / "design_r1_test-agent.md")
+        meta, sys_prompt, prompt = _parse_dump(out_path)
 
         # Content is truncated but char counts reflect original
-        assert len(data["system_prompt"]) == 100
-        assert len(data["prompt"]) == 100
-        assert data["system_prompt_chars"] == 200
-        assert data["prompt_chars"] == 500
+        assert len(sys_prompt) == 100
+        assert len(prompt) == 100
+        assert meta["system_prompt_chars"] == 200
+        assert meta["prompt_chars"] == 500
 
 
 class TestPreparedCall:

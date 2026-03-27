@@ -102,11 +102,10 @@ class Engine:
         agent,
         prepared_call,
     ) -> None:
-        """Dump the fully-assembled agent input to a JSON file for debugging."""
+        """Dump the fully-assembled agent input to a markdown file for debugging."""
         if not self.config.get_dump_agent_context():
             return
 
-        import json
         from datetime import datetime, timezone
 
         max_chars = self.config.get_dump_agent_context_max_chars()
@@ -116,36 +115,47 @@ class Engine:
             system_prompt = system_prompt[:max_chars]
             prompt = prompt[:max_chars]
 
-        snapshot = {
-            "issue_id": issue_id,
-            "phase": phase,
-            "round": round_num,
-            "action": action,
-            "agent_name": agent_name,
-            "agent_type": agent.config.get("type", "unknown"),
-            "model": agent._get_model(),
-            "cwd": prepared_call.cwd,
-            "permission_mode": agent._get_permission_mode(),
-            "session_id": prepared_call.session_id,
-            "resume_id": prepared_call.resume_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "system_prompt": system_prompt,
-            "prompt": prompt,
-            "system_prompt_chars": len(prepared_call.system_prompt),
-            "prompt_chars": len(prepared_call.prompt),
-        }
+        timestamp = datetime.now(timezone.utc).isoformat()
+        def _yaml_val(v):
+            if v is None:
+                return "null"
+            return str(v)
+
+        frontmatter = (
+            f"---\n"
+            f"issue_id: {issue_id}\n"
+            f"phase: {phase}\n"
+            f"round: {round_num}\n"
+            f"action: {action}\n"
+            f"agent_name: {agent_name}\n"
+            f"agent_type: {agent.config.get('type', 'unknown')}\n"
+            f"model: {agent._get_model()}\n"
+            f"cwd: {_yaml_val(prepared_call.cwd)}\n"
+            f"permission_mode: {agent._get_permission_mode()}\n"
+            f"session_id: {_yaml_val(prepared_call.session_id)}\n"
+            f"resume_id: {_yaml_val(prepared_call.resume_id)}\n"
+            f"timestamp: \"{timestamp}\"\n"
+            f"system_prompt_chars: {len(prepared_call.system_prompt)}\n"
+            f"prompt_chars: {len(prepared_call.prompt)}\n"
+            f"---\n"
+        )
+
+        content = (
+            f"{frontmatter}\n"
+            f"## System Prompt\n\n"
+            f"{system_prompt}\n\n"
+            f"## Prompt\n\n"
+            f"{prompt}\n"
+        )
 
         issue_dir = Path(self.repo_path) / self.config.get_issue_dir() / f"{issue_id:04d}"
         prompts_dir = issue_dir / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{action}_r{round_num}_{agent_name}.json"
+        filename = f"{action}_r{round_num}_{agent_name}.md"
         out_path = prompts_dir / filename
         try:
-            out_path.write_text(
-                json.dumps(snapshot, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            out_path.write_text(content, encoding="utf-8")
             logger.debug("Dumped agent context to %s", out_path)
         except Exception:
             logger.warning("Failed to dump agent context to %s", out_path, exc_info=True)
