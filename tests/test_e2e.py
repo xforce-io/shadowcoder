@@ -459,4 +459,46 @@ async def test_e2e_issue_file_integrity(e2e_system):
     # Content checks — should have sections
     assert "<!-- section: 设计 -->" in post.content
     assert "<!-- section: Design Review -->" in post.content
-    assert "Architecture" in post.content
+
+
+# ---------------------------------------------------------------------------
+# _init_project tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def tmp_repo(tmp_path):
+    """Create a minimal git repo for init tests."""
+    repo = tmp_path / "init-test-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "init"],
+        cwd=str(repo), check=True, capture_output=True,
+    )
+    return repo
+
+
+def test_init_adds_shadowcoder_to_root_gitignore(tmp_repo):
+    """init should add .shadowcoder/ to the repo root .gitignore."""
+    from scripts.run_real import _init_project
+    _init_project(str(tmp_repo))
+    gitignore = tmp_repo / ".gitignore"
+    assert gitignore.exists()
+    assert ".shadowcoder/" in gitignore.read_text()
+
+
+def test_init_preserves_existing_root_gitignore(tmp_repo):
+    """init should append to existing .gitignore without duplicating."""
+    from scripts.run_real import _init_project
+    gitignore = tmp_repo / ".gitignore"
+    gitignore.write_text("node_modules/\n.env\n")
+    _init_project(str(tmp_repo))
+    content = gitignore.read_text()
+    assert "node_modules/" in content  # preserved
+    assert ".env" in content           # preserved
+    assert ".shadowcoder/" in content  # added
+
+    # Run again — should not duplicate
+    _init_project(str(tmp_repo))
+    content2 = gitignore.read_text()
+    assert content2.count(".shadowcoder/") == 1

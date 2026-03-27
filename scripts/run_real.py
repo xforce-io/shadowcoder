@@ -98,6 +98,21 @@ def _init_project(repo_path: str) -> None:
         gitignore.write_text("worktrees/\n")
         created.append(str(gitignore.relative_to(repo_path)))
 
+    # Ensure .shadowcoder/ is in repo root .gitignore
+    root_gitignore = Path(repo_path) / ".gitignore"
+    entry = ".shadowcoder/\n"
+    if root_gitignore.exists():
+        existing = root_gitignore.read_text()
+        if ".shadowcoder/" not in existing:
+            with root_gitignore.open("a") as f:
+                if not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(entry)
+            created.append(".gitignore (appended .shadowcoder/)")
+    else:
+        root_gitignore.write_text(entry)
+        created.append(".gitignore")
+
     # Seed user-level default roles if missing
     seeded = _seed_user_roles()
 
