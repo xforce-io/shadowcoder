@@ -136,6 +136,7 @@ dispatch:
   design: fast-coder
   develop: fast-coder
   acceptance: fast-coder     # optional, falls back to develop agent
+  utility: fast-coder        # optional, for error extraction; falls back to develop agent
   design_review: [claude-coder]
   develop_review: [claude-coder]
 
@@ -160,6 +161,8 @@ Mix agents freely: one for develop, another for review. Agent types: `claude_cod
 - Falls back to running individual tests with force-include flags if heuristic is ambiguous
 - Gate output uses head+tail truncation (not blind tail-only) to preserve compile errors
 - 2 consecutive gate failures escalate to code reviewer for analysis
+- Gate/acceptance failure output is processed by utility agent (LLM) to extract root-cause errors
+- Same error detected in consecutive rounds triggers forced reviewer escalation
 
 ## Conventions
 
