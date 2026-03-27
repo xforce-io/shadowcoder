@@ -808,6 +808,7 @@ class Engine:
             gate_fail_count = 0
             conditional_pass_count = 0
             last_gate_output = ""
+            last_gate_summary = ""
             current_session_id = str(uuid.uuid4())
             use_resume = False
 
@@ -828,7 +829,7 @@ class Engine:
                     "latest_review": latest_review,
                     "feedback_summary": self._format_feedback_for_agent(issue.id),
                     "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
-                    "gate_output": self._truncate_output(last_gate_output) if last_gate_output else "",
+                    "gate_output": last_gate_summary if last_gate_summary else "",
                 }
                 if use_resume:
                     ctx_dict["resume_id"] = current_session_id
@@ -875,8 +876,11 @@ class Engine:
                             f"Acceptance FAIL ({gate_fail_count}): "
                             f"验收断言未通过，问题尚未解决")
                         if acc_output:
+                            acc_summary = await self._extract_error_summary(
+                                acc_output, issue_id=issue.id)
+                            last_gate_summary = acc_summary
                             self._log(issue.id,
-                                f"Acceptance output (last 1000 chars):\n{acc_output[-1000:]}")
+                                f"Acceptance output (extracted):\n{acc_summary}")
                         last_gate_output = acc_output
                         issue = self.issue_store.get(issue.id)
                         continue  # retry develop
@@ -889,7 +893,11 @@ class Engine:
                     gate_fail_count += 1
                     self._log(issue.id, f"Gate FAIL ({gate_fail_count}): {gate_msg}")
                     if gate_output:
-                        self._log(issue.id, f"Gate output (last 1000 chars):\n{gate_output[-1000:]}")
+                        gate_summary = await self._extract_error_summary(
+                            gate_output, issue_id=issue.id)
+                        last_gate_summary = gate_summary
+                        self._log(issue.id,
+                            f"Gate output (extracted):\n{gate_summary}")
                     last_gate_output = gate_output
 
                     if gate_fail_count >= 2:
@@ -909,7 +917,7 @@ class Engine:
                                     context={
                                         "worktree_path": task.worktree_path,
                                         "code_diff": code_diff_for_escalation,
-                                        "gate_failure_output": self._truncate_output(gate_output),
+                                        "gate_failure_output": last_gate_summary if last_gate_summary else self._truncate_output(gate_output),
                                         "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
                                     })
                                 review = await reviewer.review(review_request)
