@@ -89,11 +89,11 @@ class Config:
 
     def get_agent_for_phase(self, phase: str) -> str | list[str]:
         """Return agent name(s) for a phase.
-        design/develop/acceptance -> str, design_review/develop_review -> list[str].
-        acceptance falls back to develop agent if not configured."""
+        design/develop/acceptance/utility -> str, design_review/develop_review -> list[str].
+        acceptance and utility fall back to develop agent if not configured."""
         value = self._data.get("dispatch", {}).get(phase)
         if value is None:
-            if phase == "acceptance":
+            if phase in ("acceptance", "utility"):
                 return self.get_agent_for_phase("develop")
             fallback = self._first_agent()
             return [fallback] if phase.endswith("_review") else fallback

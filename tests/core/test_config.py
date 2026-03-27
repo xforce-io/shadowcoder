@@ -247,3 +247,59 @@ def test_project_config_overrides_review_policy(tmp_path):
     assert config.get_max_review_rounds() == 5
     # pass_threshold still from global
     assert config.get_pass_threshold() == "no_high_or_critical"
+
+
+def test_get_agent_for_phase_utility(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("""\
+clouds:
+  local:
+    env: {}
+models:
+  sonnet:
+    cloud: local
+    model: sonnet
+  haiku:
+    cloud: local
+    model: haiku
+agents:
+  coder:
+    type: claude_code
+    model: sonnet
+  fast:
+    type: claude_code
+    model: haiku
+dispatch:
+  design: coder
+  develop: coder
+  design_review: [coder]
+  develop_review: [coder]
+  utility: fast
+""")
+    config = Config(str(p))
+    assert config.get_agent_for_phase("utility") == "fast"
+
+
+def test_get_agent_for_phase_utility_fallback_to_develop(tmp_path):
+    """When utility is not configured, fall back to develop agent."""
+    p = tmp_path / "config.yaml"
+    p.write_text("""\
+clouds:
+  local:
+    env: {}
+models:
+  sonnet:
+    cloud: local
+    model: sonnet
+agents:
+  coder:
+    type: claude_code
+    model: sonnet
+dispatch:
+  design: coder
+  develop: coder
+  design_review: [coder]
+  develop_review: [coder]
+""")
+    config = Config(str(p))
+    assert config.get_agent_for_phase("utility") == "coder"
