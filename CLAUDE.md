@@ -131,6 +131,8 @@ agents:
   fast-coder:
     type: claude_code
     model: deepseek-v3
+    resumable: false             # recommended for third-party models
+    permission_mode: acceptEdits # recommended for third-party models
 
 dispatch:
   design: fast-coder

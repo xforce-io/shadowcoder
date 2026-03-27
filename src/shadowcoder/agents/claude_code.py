@@ -48,9 +48,10 @@ class ClaudeCodeAgent(BaseAgent):
         ]
         if system_prompt:
             cmd.extend(["--system-prompt", system_prompt])
-        if session_id:
+        resumable = self.config.get("resumable", True)
+        if session_id and resumable:
             cmd.extend(["--session-id", session_id])
-        elif resume_id:
+        elif resume_id and resumable:
             cmd.extend(["--resume", resume_id])
 
         last_err = None

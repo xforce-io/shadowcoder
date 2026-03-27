@@ -1,3 +1,4 @@
+import json
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -317,3 +318,45 @@ def test_extract_test_command_no_quotes():
 def test_extract_test_command_missing():
     doc = '# Design\n\nNo metadata block.'
     assert ClaudeCodeAgent._extract_test_command(doc) is None
+
+
+@pytest.mark.asyncio
+async def test_run_skips_session_id_when_not_resumable():
+    """When resumable=false, _run should not pass --session-id to CLI."""
+    agent = ClaudeCodeAgent({"model": "deepseek-v3", "resumable": False})
+
+    import asyncio
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        json.dumps({"result": "ok", "usage": {"input_tokens": 10, "output_tokens": 5}}).encode(),
+        b""
+    ))
+    mock_proc.returncode = 0
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        await agent._run("test prompt", session_id="sess-123")
+
+        # Verify --session-id was NOT passed
+        call_args = mock_exec.call_args[0]  # positional args
+        assert "--session-id" not in call_args
+        assert "sess-123" not in call_args
+
+
+@pytest.mark.asyncio
+async def test_run_passes_session_id_when_resumable_default():
+    """By default (resumable not set), _run passes --session-id to CLI."""
+    agent = ClaudeCodeAgent({"model": "sonnet"})
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(
+        json.dumps({"result": "ok", "usage": {"input_tokens": 10, "output_tokens": 5}}).encode(),
+        b""
+    ))
+    mock_proc.returncode = 0
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        await agent._run("test prompt", session_id="sess-456")
+
+        call_args = mock_exec.call_args[0]
+        assert "--session-id" in call_args
+        assert "sess-456" in call_args

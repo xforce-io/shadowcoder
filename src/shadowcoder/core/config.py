@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import yaml
+
+logger = logging.getLogger(__name__)
 
 
 class Config:
@@ -80,6 +83,22 @@ class Config:
                 if name not in agents:
                     raise ValueError(
                         f"Dispatch '{phase}' references unknown agent '{name}'")
+
+        # Warn about third-party clouds without resumable: false
+        for agent_name, agent_conf in agents.items():
+            model_name = agent_conf.get("model")
+            if not model_name or model_name not in models:
+                continue
+            cloud_name = models[model_name].get("cloud")
+            if not cloud_name or cloud_name not in clouds:
+                continue
+            cloud_env = clouds[cloud_name].get("env", {})
+            if "ANTHROPIC_BASE_URL" in cloud_env and agent_conf.get("resumable", True):
+                logger.warning(
+                    "Agent '%s' uses third-party cloud '%s' with session mode enabled. "
+                    "This may cause slowdowns or errors. Consider setting "
+                    "`resumable: false` and `permission_mode: acceptEdits` for this agent.",
+                    agent_name, cloud_name)
 
     def _first_agent(self) -> str:
         agents = self._data.get("agents", {})

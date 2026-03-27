@@ -303,3 +303,63 @@ dispatch:
 """)
     config = Config(str(p))
     assert config.get_agent_for_phase("utility") == "coder"
+
+
+def test_warn_third_party_cloud_without_resumable_false(tmp_path, caplog):
+    """Config warns when third-party cloud agent doesn't set resumable: false."""
+    import logging
+    p = tmp_path / "config.yaml"
+    p.write_text("""\
+clouds:
+  volcengine:
+    env:
+      ANTHROPIC_BASE_URL: https://ark.cn-beijing.volces.com/api/coding
+      ANTHROPIC_AUTH_TOKEN: test-key
+models:
+  deepseek:
+    cloud: volcengine
+    model: deepseek-v3
+agents:
+  fast:
+    type: claude_code
+    model: deepseek
+dispatch:
+  design: fast
+  develop: fast
+  design_review: [fast]
+  develop_review: [fast]
+""")
+    with caplog.at_level(logging.WARNING):
+        config = Config(str(p))
+    assert any("resumable" in r.message.lower() or "session" in r.message.lower() for r in caplog.records), \
+        f"Expected warning about resumable/session, got: {[r.message for r in caplog.records]}"
+
+
+def test_no_warn_third_party_cloud_with_resumable_false(tmp_path, caplog):
+    """No warning when third-party cloud agent sets resumable: false."""
+    import logging
+    p = tmp_path / "config.yaml"
+    p.write_text("""\
+clouds:
+  volcengine:
+    env:
+      ANTHROPIC_BASE_URL: https://example.com
+models:
+  deepseek:
+    cloud: volcengine
+    model: deepseek-v3
+agents:
+  fast:
+    type: claude_code
+    model: deepseek
+    resumable: false
+    permission_mode: acceptEdits
+dispatch:
+  design: fast
+  develop: fast
+  design_review: [fast]
+  develop_review: [fast]
+""")
+    with caplog.at_level(logging.WARNING):
+        config = Config(str(p))
+    assert not any("resumable" in r.message.lower() or "session" in r.message.lower() for r in caplog.records)
