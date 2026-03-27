@@ -692,3 +692,19 @@ async def test_extract_error_summary_calls_utility_agent(bus, config, store, tas
     # Verify prompt contains the raw output
     call_args = mock_agent._run.call_args
     assert "wrong number of arguments" in call_args[0][0]
+
+
+def test_error_hash_detects_same_error():
+    """_error_hash returns consistent hash for same error, different for different errors."""
+    from shadowcoder.core.engine import Engine
+    h1 = Engine._error_hash("FAIL: wrong number of args to Return: got 1, want 2")
+    h2 = Engine._error_hash("FAIL: wrong number of args to Return: got 1, want 2")
+    h3 = Engine._error_hash("FAIL: undefined function foo()")
+    assert h1 == h2
+    assert h1 != h3
+
+
+def test_error_hash_empty():
+    from shadowcoder.core.engine import Engine
+    assert Engine._error_hash("") == ""
+    assert Engine._error_hash(None) == ""

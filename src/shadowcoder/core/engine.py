@@ -124,6 +124,14 @@ class Engine:
                     summary_parts.append(stripped)
         return "\n".join(summary_parts)
 
+    @staticmethod
+    def _error_hash(summary: str | None) -> str:
+        """Hash an error summary for same-error detection across rounds."""
+        if not summary:
+            return ""
+        import hashlib
+        return hashlib.sha256(summary.strip().encode()).hexdigest()[:16]
+
     async def _extract_error_summary(
         self, raw_output: str, *, issue_id: int | None = None
     ) -> str:
@@ -809,6 +817,7 @@ class Engine:
             conditional_pass_count = 0
             last_gate_output = ""
             last_gate_summary = ""
+            last_error_hash = ""
             current_session_id = str(uuid.uuid4())
             use_resume = False
 
@@ -881,6 +890,13 @@ class Engine:
                             last_gate_summary = acc_summary
                             self._log(issue.id,
                                 f"Acceptance output (extracted):\n{acc_summary}")
+                            new_hash = self._error_hash(last_gate_summary)
+                            if new_hash and new_hash == last_error_hash:
+                                self._log(issue.id,
+                                    "Same error detected in consecutive rounds — "
+                                    "forcing root cause analysis via reviewer")
+                                gate_fail_count = 2  # triggers existing escalation logic
+                            last_error_hash = new_hash
                         last_gate_output = acc_output
                         issue = self.issue_store.get(issue.id)
                         continue  # retry develop
@@ -898,6 +914,13 @@ class Engine:
                         last_gate_summary = gate_summary
                         self._log(issue.id,
                             f"Gate output (extracted):\n{gate_summary}")
+                        new_hash = self._error_hash(last_gate_summary)
+                        if new_hash and new_hash == last_error_hash:
+                            self._log(issue.id,
+                                "Same error detected in consecutive rounds — "
+                                "forcing root cause analysis via reviewer")
+                            gate_fail_count = 2  # triggers existing escalation logic
+                        last_error_hash = new_hash
                     last_gate_output = gate_output
 
                     if gate_fail_count >= 2:
