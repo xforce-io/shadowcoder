@@ -727,6 +727,7 @@ class Engine:
         """
         acceptance_path = self._acceptance_script_path(issue.id)
         max_attempts = 3
+        self._last_acceptance_output = ""
 
         for attempt in range(1, max_attempts + 1):
             # Write or rewrite acceptance script
@@ -760,6 +761,21 @@ class Engine:
             self._track_usage(issue.id, output.usage,
                               phase="acceptance", round_num=attempt)
             acceptance_path.write_text(output.script, encoding="utf-8")
+
+            # Validate bash syntax before execution
+            syntax_ok, syntax_err = await self._run_command(
+                f"bash -n {acceptance_path}", cwd=task.worktree_path)
+            if not syntax_ok:
+                self._log(issue.id,
+                    f"Acceptance script bash 语法错误 (attempt {attempt}/{max_attempts}): "
+                    f"{syntax_err[:200]}")
+                ctx["pre_gate_failure"] = (
+                    f"Your acceptance script has bash SYNTAX ERRORS:\n"
+                    f"{syntax_err}\n\n"
+                    f"Script content:\n{output.script}\n\n"
+                    f"Fix the syntax and regenerate a valid bash script."
+                )
+                continue
 
             # Pre-gate: script must FAIL
             passed, exec_output = await self._run_command(

@@ -747,3 +747,31 @@ async def test_run_warns_on_duplicate_active_issue(bus, config, store, task_mgr)
     # Check that a warning was logged about active issues
     warning_found = any("活跃 issue" in m or "active issue" in m for m in logged)
     assert warning_found, f"Expected active-issue warning in logs, got: {logged}"
+
+
+@pytest.mark.asyncio
+async def test_acceptance_script_syntax_validation(bus, config, store, task_mgr, tmp_repo):
+    """Acceptance script with bash syntax errors triggers retry."""
+    bad_script = AcceptanceOutput(
+        script="#!/bin/bash\nVersionService interface {\n  not valid bash\n}\n")
+    good_script = AcceptanceOutput(
+        script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
+    mock_agent = _make_mock_agent()
+    # First call returns bad bash, second returns good bash
+    mock_agent.write_acceptance_script = AsyncMock(
+        side_effect=[bad_script, good_script])
+
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, reg, config, str(tmp_repo))
+
+    issue = store.create("Test issue")
+    from shadowcoder.core.models import Task
+    task = Task(task_id="t1", issue_id=issue.id, repo_path=str(tmp_repo),
+                action="acceptance", agent_name="mock",
+                worktree_path=str(tmp_repo), status=TaskStatus.RUNNING)
+
+    result = await engine._run_acceptance_phase(issue, task)
+    # Should have retried and succeeded with the good script
+    assert mock_agent.write_acceptance_script.call_count == 2
