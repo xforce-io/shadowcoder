@@ -662,3 +662,33 @@ async def test_gate_fallback_without_design_test_command(bus, store, task_mgr, r
         passed, msg, output = await engine._gate_check(1, td, [])
         assert not passed
         assert "Cannot detect test command" in msg
+
+
+@pytest.mark.asyncio
+async def test_extract_error_summary_calls_utility_agent(bus, config, store, task_mgr):
+    """_extract_error_summary uses the utility agent to extract root cause."""
+    mock_agent = _make_mock_agent()
+    # Simulate the utility agent returning a structured summary
+    mock_agent._run = AsyncMock(return_value=(
+        "Root cause: wrong number of arguments to Return for MockKNAccess.DeleteKN: got 1, want 2\n"
+        "Location: version_service_test.go:1024\n"
+        "Fix: Change .Return(nil) to .Return(int64(0), nil)",
+        AgentUsage(input_tokens=500, output_tokens=100),
+    ))
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, reg, config, "/tmp/repo")
+
+    summary = await engine._extract_error_summary(
+        "... 500 lines of test output with PASS tests ...\n"
+        "wrong number of arguments to Return: got 1, want 2\n"
+        "missing call(s) to MockKNAccess.DeleteKN\n" * 100 +
+        "FAIL\nFAIL bkn-backend/logics/version 1.2s\n",
+        issue_id=1,
+    )
+    assert summary  # non-empty
+    assert "Root cause" in summary
+    mock_agent._run.assert_called_once()
+    # Verify prompt contains the raw output
+    call_args = mock_agent._run.call_args
+    assert "wrong number of arguments" in call_args[0][0]

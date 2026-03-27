@@ -124,6 +124,39 @@ class Engine:
                     summary_parts.append(stripped)
         return "\n".join(summary_parts)
 
+    async def _extract_error_summary(
+        self, raw_output: str, *, issue_id: int | None = None
+    ) -> str:
+        """Use utility agent (LLM) to extract root-cause error summary from test output.
+
+        Falls back to _truncate_output if utility agent is unavailable or fails.
+        """
+        if not raw_output or len(raw_output) <= 3000:
+            return raw_output
+
+        utility_agent_name = self.config.get_agent_for_phase("utility")
+        agent = self.agents.get(utility_agent_name)
+        if agent is None:
+            return self._truncate_output(raw_output)
+
+        prompt = (
+            "Below is the output from a failed test run. "
+            "Extract the ROOT CAUSE error — the first few lines that explain WHY the test failed. "
+            "Ignore cascade errors (e.g. 'missing call' lines caused by an earlier failure). "
+            "Output only the key error lines (3-10 lines), nothing else.\n\n"
+            f"```\n{raw_output[-8000:]}\n```"
+        )
+        try:
+            summary, usage = await agent._run(
+                prompt,
+                system_prompt="You are a test output analyzer. Extract root cause errors concisely.",
+            )
+            if issue_id is not None and usage:
+                self._track_usage(issue_id, usage, phase="utility")
+            return summary.strip() if summary.strip() else self._truncate_output(raw_output)
+        except Exception:
+            return self._truncate_output(raw_output)
+
     async def _run_command(self, cmd: str, cwd: str) -> tuple[bool, str]:
         """Run a shell command, return (passed, output)."""
         proc = await asyncio.create_subprocess_shell(
