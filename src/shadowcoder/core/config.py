@@ -148,5 +148,9 @@ class Config:
     def get_test_command(self) -> str | None:
         return self._data.get("build", {}).get("test_command")
 
+    def get_confirm_acceptance(self) -> bool:
+        """Whether to pause for human confirmation after acceptance tests xfail."""
+        return self._data.get("review_policy", {}).get("confirm_acceptance", False)
+
     def get_gate_mode(self) -> str:
         return self._data.get("gate", {}).get("mode", "standard")
