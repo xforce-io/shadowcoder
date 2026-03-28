@@ -217,6 +217,14 @@ async def main():
     elif command == "approve":
         await bus.publish(Message(MessageType.CMD_APPROVE, {"issue_id": int(args[0])}))
 
+    elif command == "unblock":
+        issue_id = int(args[0])
+        message = " ".join(args[1:]) if len(args) > 1 else ""
+        payload = {"issue_id": issue_id}
+        if message:
+            payload["message"] = message
+        await bus.publish(Message(MessageType.CMD_UNBLOCK, payload))
+
     elif command == "resume":
         await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": int(args[0])}))
 

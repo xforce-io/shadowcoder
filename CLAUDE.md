@@ -58,11 +58,14 @@ ls ~/dev/github/<name>/.shadowcoder/worktrees/issue-1/
 # List all issues
 python scripts/run_real.py ~/dev/github/<name> list
 
-# Resume a BLOCKED issue (after human review)
+# Resume an interrupted issue (process crash recovery, not for BLOCKED)
 python scripts/run_real.py ~/dev/github/<name> resume 1
 
-# Approve a BLOCKED issue (skip remaining review)
+# Approve a BLOCKED issue (accept current state, close it)
 python scripts/run_real.py ~/dev/github/<name> approve 1
+
+# Unblock a BLOCKED issue (fix the blocker and continue)
+python scripts/run_real.py ~/dev/github/<name> unblock 1 "fixed acceptance script"
 
 # Iterate on a DONE issue (append requirements, re-enter develop)
 python scripts/run_real.py ~/dev/github/<name> iterate 1 "Add pagination"

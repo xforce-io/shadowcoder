@@ -1483,11 +1483,17 @@ class Engine:
 
     async def _on_info(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
-        await self.bus.publish(Message(MessageType.EVT_ISSUE_INFO, {
-            "issue": {"id": issue.id, "title": issue.title,
-                      "status": issue.status.value, "priority": issue.priority,
-                      "tags": issue.tags, "assignee": issue.assignee,
-                      "sections": list(issue.sections.keys())}}))
+        info = {
+            "id": issue.id, "title": issue.title,
+            "status": issue.status.value, "priority": issue.priority,
+            "tags": issue.tags, "assignee": issue.assignee,
+            "sections": list(issue.sections.keys()),
+        }
+        if issue.blocked_reason:
+            info["blocked_reason"] = issue.blocked_reason
+        if issue.blocked_from:
+            info["blocked_from"] = issue.blocked_from.value
+        await self.bus.publish(Message(MessageType.EVT_ISSUE_INFO, {"issue": info}))
 
     async def _on_iterate(self, msg):
         """Iterate on a DONE issue: append new requirements, re-enter develop cycle."""
