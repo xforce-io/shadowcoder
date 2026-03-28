@@ -815,6 +815,8 @@ class Engine:
 
             ctx = {
                 "worktree_path": task.worktree_path,
+                "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
+                "feedback_summary": self._format_feedback_for_agent(issue.id),
             }
             if attempt > 1:
                 ctx["pre_gate_failure"] = (
