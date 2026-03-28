@@ -216,6 +216,36 @@ async def test_approve_blocked(bus, store, task_mgr, config):
     assert store.get(1).status == IssueStatus.APPROVED
 
 
+@pytest.mark.asyncio
+async def test_approve_clears_blocked_fields(bus, config, store, task_mgr):
+    """approve clears blocked_reason and blocked_from."""
+    from shadowcoder.core.models import BLOCKED_MAX_ROUNDS
+    agent = _make_mock_agent()
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+    engine = make_engine(bus, store, task_mgr, reg, config)
+
+    store.create("Test approve clear")
+    store.update_section(1, "开发步骤", "some code")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+    store.transition_status(1, IssueStatus.DEVELOPING)
+
+    issue = store.get(1)
+    issue.blocked_reason = BLOCKED_MAX_ROUNDS
+    issue.blocked_from = IssueStatus.DEVELOPING
+    issue.status = IssueStatus.BLOCKED
+    store.save(issue)
+
+    await bus.publish(Message(MessageType.CMD_APPROVE, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.DONE
+    assert issue.blocked_reason is None
+    assert issue.blocked_from is None
+
+
 async def test_create_issue(bus, store, task_mgr, registry_with, config):
     engine = make_engine(bus, store, task_mgr, registry_with, config)
     events = []

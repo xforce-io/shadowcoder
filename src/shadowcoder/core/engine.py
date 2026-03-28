@@ -1407,7 +1407,11 @@ class Engine:
             return
         stage = self._infer_blocked_stage(issue)
         next_status = IssueStatus.DONE if stage == "develop" else IssueStatus.APPROVED
-        self.issue_store.transition_status(issue.id, next_status)
+        # Clear blocked metadata
+        issue.blocked_reason = None
+        issue.blocked_from = None
+        issue.status = next_status
+        self.issue_store.save(issue)
         self._log(issue.id, f"人类介入: approve → {next_status.value}")
         await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
             {"issue_id": issue.id, "status": next_status.value}))
