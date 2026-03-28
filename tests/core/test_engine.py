@@ -699,6 +699,27 @@ async def test_gate_fallback_without_design_test_command(bus, store, task_mgr, r
 
 
 @pytest.mark.asyncio
+async def test_get_code_diff_excludes_binary_files(bus, config, store, task_mgr, tmp_repo):
+    """_get_code_diff must not include binary files like .pyc in the diff."""
+    mock_agent = _make_mock_agent()
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, reg, config, str(tmp_repo))
+
+    # Create a text file and a binary file as untracked new files
+    (tmp_repo / "hello.py").write_text("print('hello')\n")
+    (tmp_repo / "__pycache__").mkdir()
+    (tmp_repo / "__pycache__" / "hello.cpython-313.pyc").write_bytes(
+        b"\x00\x01\x02compiled bytecode\xff\xfe")
+
+    diff = await engine._get_code_diff(str(tmp_repo))
+    assert "hello.py" in diff
+    assert "print('hello')" in diff
+    assert ".pyc" not in diff
+    assert "\x00" not in diff
+
+
+@pytest.mark.asyncio
 async def test_extract_error_summary_calls_utility_agent(bus, config, store, task_mgr):
     """_extract_error_summary uses the utility agent to extract root cause."""
     mock_agent = _make_mock_agent()

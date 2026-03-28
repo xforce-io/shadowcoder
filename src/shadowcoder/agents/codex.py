@@ -63,7 +63,9 @@ class CodexAgent(BaseAgent):
                 "Running fresh session (session_id=%s ignored).", session_id,
             )
 
-        # Inject system prompt via AGENTS.md if provided
+        # Inject system prompt via AGENTS.md if provided.
+        # When cwd is None (e.g. preflight), fall back to prepending
+        # the system prompt to the user prompt directly.
         agents_md_path = Path(cwd) / "AGENTS.md" if cwd else None
         original_agents_md: str | None = None
         agents_md_existed = False
@@ -76,6 +78,8 @@ class CodexAgent(BaseAgent):
             else:
                 new_content = system_prompt
             agents_md_path.write_text(new_content, encoding="utf-8")
+        elif system_prompt and not agents_md_path:
+            prompt = f"{system_prompt}\n\n---\n\n{prompt}"
 
         try:
             return await self._run_subprocess(prompt, cwd=cwd)

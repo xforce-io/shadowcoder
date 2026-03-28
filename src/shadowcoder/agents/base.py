@@ -324,7 +324,8 @@ class BaseAgent(ABC):
                 risks=data.get("risks", []),
                 tech_stack_recommendation=data.get("tech_stack_recommendation"),
                 usage=usage)
-        except Exception:
+        except Exception as e:
+            logger.warning("Preflight JSON parse failed: %s | raw output: %.500s", e, result)
             return PreflightOutput(feasibility="medium", estimated_complexity="moderate",
                                    risks=["Could not assess — preflight parse failed"], usage=usage)
 
@@ -465,4 +466,14 @@ class BaseAgent(ABC):
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
             text = text.split("```")[1].split("```")[0]
-        return json.loads(text.strip())
+        text = text.strip()
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        # Fallback: find the first { ... } block in the raw text
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end > start:
+            return json.loads(raw[start:end + 1])
+        raise json.JSONDecodeError("No JSON object found", raw, 0)

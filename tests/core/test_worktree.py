@@ -65,6 +65,28 @@ async def test_cleanup(tmp_repo, wt_manager):
     assert "fix/1" in result.stdout
 
 
+async def test_ensure_creates_gitignore_if_missing(tmp_repo, wt_manager):
+    """Worktree should get a .gitignore with common patterns if repo lacks one."""
+    # Confirm the repo has no .gitignore
+    assert not (tmp_repo / ".gitignore").exists()
+    wt_path = await wt_manager.ensure(str(tmp_repo), 1)
+    gitignore = Path(wt_path) / ".gitignore"
+    assert gitignore.exists(), ".gitignore should be created in new worktree"
+    content = gitignore.read_text()
+    assert "__pycache__" in content
+
+
+async def test_ensure_preserves_existing_gitignore(tmp_repo, wt_manager):
+    """If repo already has .gitignore, worktree should inherit it, not overwrite."""
+    import subprocess
+    (tmp_repo / ".gitignore").write_text("*.log\n")
+    subprocess.run(["git", "add", ".gitignore"], cwd=str(tmp_repo), check=True)
+    subprocess.run(["git", "commit", "-m", "add gitignore"], cwd=str(tmp_repo), check=True)
+    wt_path = await wt_manager.ensure(str(tmp_repo), 1)
+    content = (Path(wt_path) / ".gitignore").read_text()
+    assert "*.log" in content
+
+
 async def test_cleanup_with_branch_delete(tmp_repo, wt_manager):
     import subprocess
     wt_path = await wt_manager.ensure(str(tmp_repo), 1)

@@ -24,6 +24,18 @@ from shadowcoder.core.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
 
+# Extensions that should never appear in code diffs sent to reviewers.
+_BINARY_EXTS = frozenset({
+    ".pyc", ".pyo", ".so", ".dll", ".dylib", ".exe",
+    ".o", ".a", ".class", ".jar", ".wasm",
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp",
+    ".zip", ".gz", ".tar", ".bz2", ".xz",
+    ".pdf", ".woff", ".woff2", ".ttf", ".eot",
+})
+
+# Max size (bytes) for untracked files included in code diffs.
+_MAX_NEW_FILE_SIZE = 50_000
+
 
 class Engine:
     def __init__(self, bus, issue_store, task_manager, agent_registry, config, repo_path):
@@ -379,8 +391,15 @@ class Engine:
         stdout2, _ = await proc2.communicate()
         for fpath in stdout2.decode().strip().splitlines():
             full = Path(worktree_path) / fpath
-            if full.exists() and full.stat().st_size < 50000:
-                diff += f"\n\n=== NEW FILE: {fpath} ===\n{full.read_text(errors='replace')}"
+            if not full.exists() or full.stat().st_size >= _MAX_NEW_FILE_SIZE:
+                continue
+            if full.suffix.lower() in _BINARY_EXTS:
+                continue
+            try:
+                content = full.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, ValueError):
+                continue  # skip files that aren't valid text
+            diff += f"\n\n=== NEW FILE: {fpath} ===\n{content}"
         return diff
 
     @staticmethod

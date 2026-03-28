@@ -342,6 +342,41 @@ async def test_codex_agents_md_cleaned_on_exception_no_original(tmp_path):
 
 
 # ------------------------------------------------------------------ #
+#  System prompt must not be silently dropped when cwd is None       #
+# ------------------------------------------------------------------ #
+
+async def test_run_cwd_none_system_prompt_prepended(agent):
+    """When cwd=None, system_prompt cannot use AGENTS.md.
+    It must be prepended to the prompt so the model still receives it."""
+    captured_prompt = None
+    mock_proc = _mock_proc(_make_jsonl())
+
+    async def capture_exec(*args, **kwargs):
+        nonlocal captured_prompt
+        # args[0] is 'codex', rest are flags, last is '-' for stdin
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=capture_exec) as mock_exec:
+        # Capture the stdin input sent to the subprocess
+        original_communicate = mock_proc.communicate
+
+        async def capture_communicate(input=None):
+            nonlocal captured_prompt
+            if input:
+                captured_prompt = input.decode("utf-8")
+            return await original_communicate(input=input)
+
+        mock_proc.communicate = capture_communicate
+        await agent._run("user prompt here", cwd=None, system_prompt="You are a JSON bot.")
+
+    assert captured_prompt is not None
+    assert "You are a JSON bot." in captured_prompt, (
+        "system_prompt must reach the model even when cwd=None; "
+        "got prompt: " + (captured_prompt or "<empty>")
+    )
+
+
+# ------------------------------------------------------------------ #
 #  AC8: Inherited actions work via mocked _run()                     #
 # ------------------------------------------------------------------ #
 

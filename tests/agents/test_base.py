@@ -157,6 +157,34 @@ class TestExtractBashScript:
         assert "echo hello world" in result
 
 
+class TestExtractJson:
+    """Tests for BaseAgent._extract_json — extracting JSON from model output."""
+
+    def _call(self, text):
+        agent = MinimalSubclass(config={"type": "test"})
+        return agent._extract_json(text)
+
+    def test_pure_json(self):
+        result = self._call('{"feasibility": "high", "risks": []}')
+        assert result["feasibility"] == "high"
+
+    def test_fenced_json(self):
+        raw = 'Here is my assessment:\n```json\n{"feasibility": "low"}\n```\nDone.'
+        result = self._call(raw)
+        assert result["feasibility"] == "low"
+
+    def test_json_embedded_in_prose_no_fence(self):
+        """Model returns JSON embedded in natural language without fences."""
+        raw = 'Based on my analysis:\n\n{"feasibility": "high", "risks": ["none"]}\n\nLet me know.'
+        result = self._call(raw)
+        assert result["feasibility"] == "high"
+
+    def test_bare_fence(self):
+        raw = '```\n{"feasibility": "medium"}\n```'
+        result = self._call(raw)
+        assert result["feasibility"] == "medium"
+
+
 class TestFindWrittenScript:
     """Tests for BaseAgent._find_written_script — detecting agent-written files."""
 
