@@ -158,7 +158,8 @@ class Engine:
         prompts_dir = issue_dir / "prompts"
         prompts_dir.mkdir(parents=True, exist_ok=True)
 
-        filename = f"{action}_r{round_num}_{agent_name}.md"
+        ts_short = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"{action}_r{round_num}_{agent_name}_{ts_short}.md"
         out_path = prompts_dir / filename
         try:
             out_path.write_text(content, encoding="utf-8")

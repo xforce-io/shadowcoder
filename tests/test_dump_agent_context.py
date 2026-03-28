@@ -78,6 +78,13 @@ def _make_engine(repo_path, dump_enabled=False, max_chars=None):
     return Engine(bus, None, None, None, config, str(repo_path))
 
 
+def _find_dump(prompts_dir: Path, pattern: str) -> Path:
+    """Find a single dump file matching a glob pattern."""
+    files = list(prompts_dir.glob(pattern))
+    assert len(files) == 1, f"Expected 1 file matching {pattern}, found {len(files)}: {files}"
+    return files[0]
+
+
 def _parse_dump(path: Path) -> tuple[dict, str, str]:
     """Parse a dump markdown file. Returns (frontmatter_dict, system_prompt, prompt)."""
     text = path.read_text(encoding="utf-8")
@@ -127,7 +134,7 @@ class TestDumpEnabled:
         assert prompts_dir.exists()
         files = list(prompts_dir.glob("*.md"))
         assert len(files) == 1
-        assert files[0].name == "design_r1_test-agent.md"
+        assert files[0].name.startswith("design_r1_test-agent_")
 
     def test_file_contains_required_fields(self, repo_path, agent):
         engine = _make_engine(repo_path, dump_enabled=True)
@@ -141,8 +148,9 @@ class TestDumpEnabled:
         engine._dump_agent_context(
             issue.id, "design", 2, "design", "test-agent", agent, call)
 
-        out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "design_r2_test-agent.md")
+        prompts_dir = (Path(repo_path) / ".shadowcoder" / "issues"
+                    / f"{issue.id:04d}" / "prompts")
+        out_path = _find_dump(prompts_dir, "design_r2_test-agent_*.md")
         meta, sys_prompt, prompt = _parse_dump(out_path)
 
         assert meta["issue_id"] == issue.id
@@ -177,8 +185,9 @@ class TestDumpEnabled:
         engine._dump_agent_context(
             issue.id, "develop", 1, "develop", "test-agent", agent, call)
 
-        out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "develop_r1_test-agent.md")
+        prompts_dir = (Path(repo_path) / ".shadowcoder" / "issues"
+                    / f"{issue.id:04d}" / "prompts")
+        out_path = _find_dump(prompts_dir, "develop_r1_test-agent_*.md")
         meta, _, _ = _parse_dump(out_path)
         assert meta["session_id"] == "sess-123"
         assert meta["resume_id"] is None
@@ -196,8 +205,9 @@ class TestDumpEnabled:
             issue.id, "design_review", 1, "design_review",
             "test-agent", agent, call)
 
-        out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "design_review_r1_test-agent.md")
+        prompts_dir = (Path(repo_path) / ".shadowcoder" / "issues"
+                    / f"{issue.id:04d}" / "prompts")
+        out_path = _find_dump(prompts_dir, "design_review_r1_test-agent_*.md")
         assert out_path.exists()
 
 
@@ -216,8 +226,9 @@ class TestTruncation:
         engine._dump_agent_context(
             issue.id, "design", 1, "design", "test-agent", agent, call)
 
-        out_path = (Path(repo_path) / ".shadowcoder" / "issues"
-                    / f"{issue.id:04d}" / "prompts" / "design_r1_test-agent.md")
+        prompts_dir = (Path(repo_path) / ".shadowcoder" / "issues"
+                    / f"{issue.id:04d}" / "prompts")
+        out_path = _find_dump(prompts_dir, "design_r1_test-agent_*.md")
         meta, sys_prompt, prompt = _parse_dump(out_path)
 
         # Content is truncated but char counts reflect original
