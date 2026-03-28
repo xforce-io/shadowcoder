@@ -179,6 +179,16 @@ class BaseAgent(ABC):
         unresolved = request.context.get("unresolved_feedback", "")
         if unresolved:
             parts.append(f"\n--- {unresolved}")
+        # Include gate/acceptance failure output for escalation analysis
+        gate_failure = request.context.get("gate_failure_output", "")
+        if gate_failure:
+            parts.append(f"\n--- Failure Output ---\n{gate_failure}")
+        # Include acceptance script if provided (for escalation analysis)
+        acceptance_script = request.context.get("acceptance_script", "")
+        if acceptance_script:
+            parts.append(
+                f"\n--- Acceptance Script (验收脚本 — judge whether the SCRIPT or the CODE is wrong) ---\n"
+                f"{acceptance_script}")
         return "\n".join(parts)
 
     def _extract_comments_from_text(self, text: str) -> list[ReviewComment]:

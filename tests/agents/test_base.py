@@ -88,3 +88,33 @@ def test_claude_code_agent_has_no_own_extract_comments():
     """ClaudeCodeAgent must not define its own _extract_comments_from_text."""
     from shadowcoder.agents.claude_code import ClaudeCodeAgent
     assert "_extract_comments_from_text" not in ClaudeCodeAgent.__dict__
+
+
+def test_review_context_includes_acceptance_script():
+    """When acceptance_script and gate_failure_output are in context,
+    _build_review_context includes them in the output string."""
+    from datetime import datetime
+    from shadowcoder.core.models import Issue, IssueStatus
+    from shadowcoder.agents.types import AgentRequest
+
+    issue = Issue(
+        id=1,
+        title="test",
+        status=IssueStatus.DEVELOPING,
+        priority="normal",
+        created=datetime.now(),
+        updated=datetime.now(),
+        sections={"需求": "implement foo"},
+    )
+
+    request = AgentRequest(action="review", issue=issue, context={
+        "code_diff": "diff --git a/foo.py",
+        "acceptance_script": "#!/bin/bash\nassert something\n",
+        "gate_failure_output": "Expected ValueError for '1 - - 2'",
+    })
+
+    agent = MinimalSubclass(config={"type": "test"})
+    ctx = agent._build_review_context(request)
+    assert "#!/bin/bash" in ctx
+    assert "assert something" in ctx
+    assert "Expected ValueError" in ctx
