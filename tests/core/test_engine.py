@@ -948,3 +948,105 @@ async def test_block_issue_sets_metadata(bus, config, store, task_mgr):
     assert issue.status == IssueStatus.BLOCKED
     assert issue.blocked_reason == BLOCKED_ACCEPTANCE_BUG
     assert issue.blocked_from == IssueStatus.DEVELOPING
+
+
+@pytest.mark.asyncio
+async def test_unblock_restores_develop(bus, config, store, task_mgr, tmp_repo):
+    """unblock restores blocked_from status and re-enters develop cycle."""
+    from shadowcoder.core.models import BLOCKED_ACCEPTANCE_BUG
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="low")),
+        develop=AsyncMock(return_value=DevelopOutput(summary="code")),
+        review=AsyncMock(return_value=ReviewOutput(
+            comments=[], reviewer="mock")),
+    )
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = make_engine(bus, store, task_mgr, reg, config, repo_path=str(tmp_repo))
+
+    issue = store.create("Test unblock")
+    store.update_section(1, "需求", "implement foo")
+    store.update_section(1, "设计", "design foo")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+    store.transition_status(1, IssueStatus.DEVELOPING)
+
+    # Manually block with metadata
+    issue = store.get(1)
+    issue.blocked_reason = BLOCKED_ACCEPTANCE_BUG
+    issue.blocked_from = IssueStatus.DEVELOPING
+    issue.status = IssueStatus.BLOCKED
+    store.save(issue)
+
+    # Write acceptance script that passes (so develop can complete)
+    acc_path = Path(store.base) / "0001" / "acceptance.sh"
+    acc_path.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
+
+    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._get_code_diff = AsyncMock(return_value="diff")
+    engine._run_command = AsyncMock(return_value=(True, ""))
+
+    await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
+
+    issue = store.get(1)
+    # Should have completed the develop cycle (review passes with no comments)
+    assert issue.status == IssueStatus.DONE
+    assert issue.blocked_reason is None
+    assert issue.blocked_from is None
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_message_logs(bus, config, store, task_mgr, tmp_repo):
+    """unblock message is written to issue log."""
+    from shadowcoder.core.models import BLOCKED_MAX_ROUNDS
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="low")),
+        develop=AsyncMock(return_value=DevelopOutput(summary="code")),
+        review=AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock")),
+    )
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = make_engine(bus, store, task_mgr, reg, config, repo_path=str(tmp_repo))
+
+    issue = store.create("Test unblock msg")
+    store.update_section(1, "需求", "foo")
+    store.update_section(1, "设计", "bar")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+    store.transition_status(1, IssueStatus.DEVELOPING)
+
+    issue = store.get(1)
+    issue.blocked_reason = BLOCKED_MAX_ROUNDS
+    issue.blocked_from = IssueStatus.DEVELOPING
+    issue.status = IssueStatus.BLOCKED
+    store.save(issue)
+
+    acc_path = Path(store.base) / "0001" / "acceptance.sh"
+    acc_path.write_text("#!/bin/bash\nexit 0\n")
+    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._get_code_diff = AsyncMock(return_value="diff")
+    engine._run_command = AsyncMock(return_value=(True, ""))
+
+    await bus.publish(Message(MessageType.CMD_UNBLOCK, {
+        "issue_id": 1, "message": "fixed acceptance script"}))
+
+    log = store.get_log(1)
+    assert "fixed acceptance script" in log
+
+
+@pytest.mark.asyncio
+async def test_unblock_rejects_non_blocked(bus, config, store, task_mgr):
+    """unblock on non-BLOCKED issue emits error."""
+    engine = make_engine(bus, store, task_mgr, MagicMock(), config)
+    store.create("Test not blocked")
+
+    errors = []
+    bus.subscribe(MessageType.EVT_ERROR, lambda m: errors.append(m))
+
+    await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
+    assert len(errors) == 1
+    assert "not BLOCKED" in errors[0].payload["message"]

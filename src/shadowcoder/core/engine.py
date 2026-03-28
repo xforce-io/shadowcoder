@@ -42,6 +42,7 @@ class Engine:
         self.bus.subscribe(MessageType.CMD_RUN, self._on_run)
         self.bus.subscribe(MessageType.CMD_RESUME, self._on_resume)
         self.bus.subscribe(MessageType.CMD_APPROVE, self._on_approve)
+        self.bus.subscribe(MessageType.CMD_UNBLOCK, self._on_unblock)
         self.bus.subscribe(MessageType.CMD_CANCEL, self._on_cancel)
         self.bus.subscribe(MessageType.CMD_LIST, self._on_list)
         self.bus.subscribe(MessageType.CMD_INFO, self._on_info)
@@ -1410,6 +1411,54 @@ class Engine:
         self._log(issue.id, f"人类介入: approve → {next_status.value}")
         await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
             {"issue_id": issue.id, "status": next_status.value}))
+
+    async def _on_unblock(self, msg):
+        """Unblock: restore pre-BLOCKED state and re-enter cycle."""
+        issue = self.issue_store.get(msg.payload["issue_id"])
+        if issue.status != IssueStatus.BLOCKED:
+            await self.bus.publish(Message(MessageType.EVT_ERROR,
+                {"message": f"issue #{issue.id} is not BLOCKED"}))
+            return
+
+        message = msg.payload.get("message", "")
+        from_status = issue.blocked_from
+        reason = issue.blocked_reason
+
+        # Log the unblock
+        if message:
+            self._log(issue.id, f"人类介入: unblock ({reason}) — {message}")
+        else:
+            self._log(issue.id, f"人类介入: unblock ({reason})")
+
+        # Clear blocked metadata and restore status
+        issue.blocked_reason = None
+        issue.blocked_from = None
+        if from_status:
+            issue.status = from_status
+        else:
+            # Fallback for legacy issues without blocked_from
+            stage = self._infer_blocked_stage(issue)
+            if stage == "develop":
+                issue.status = IssueStatus.APPROVED
+            elif stage == "design":
+                issue.status = IssueStatus.CREATED
+            else:
+                await self.bus.publish(Message(MessageType.EVT_ERROR,
+                    {"message": f"cannot infer stage for issue #{issue.id}"}))
+                return
+        self.issue_store.save(issue)
+
+        await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
+            {"issue_id": issue.id, "status": issue.status.value}))
+
+        # Auto-trigger the corresponding cycle
+        # Re-read issue after save to get fresh state
+        issue = self.issue_store.get(issue.id)
+        stage = self._infer_blocked_stage(issue)
+        if stage == "develop":
+            await self._on_develop(msg)
+        elif stage == "design":
+            await self._on_design(msg)
 
     async def _on_cancel(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
