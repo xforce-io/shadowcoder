@@ -320,7 +320,11 @@ async def test_resume_blocked_design(bus, store, task_mgr, config):
     await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
     assert store.get(1).status == IssueStatus.BLOCKED
 
-    await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
+    issue = store.get(1)
+    issue.blocked_from = IssueStatus.DESIGNING
+    store.save(issue)
+
+    await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
     assert store.get(1).status == IssueStatus.APPROVED
 
 
@@ -1080,3 +1084,29 @@ async def test_unblock_rejects_non_blocked(bus, config, store, task_mgr):
     await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
     assert len(errors) == 1
     assert "not BLOCKED" in errors[0].payload["message"]
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_blocked(bus, config, store, task_mgr):
+    """resume on BLOCKED issue returns error suggesting unblock."""
+    from shadowcoder.core.models import BLOCKED_MAX_ROUNDS
+    engine = make_engine(bus, store, task_mgr, MagicMock(), config)
+    store.create("Test resume blocked")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+    store.transition_status(1, IssueStatus.DEVELOPING)
+
+    issue = store.get(1)
+    issue.blocked_reason = BLOCKED_MAX_ROUNDS
+    issue.blocked_from = IssueStatus.DEVELOPING
+    issue.status = IssueStatus.BLOCKED
+    store.save(issue)
+
+    errors = []
+    bus.subscribe(MessageType.EVT_ERROR, lambda m: errors.append(m))
+
+    await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
+
+    assert len(errors) == 1
+    assert "unblock" in errors[0].payload["message"].lower()

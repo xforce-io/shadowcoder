@@ -1385,10 +1385,11 @@ class Engine:
 
     async def _on_resume(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
-        if issue.status != IssueStatus.BLOCKED:
+        if issue.status == IssueStatus.BLOCKED:
             await self.bus.publish(Message(MessageType.EVT_ERROR,
-                {"message": f"issue #{issue.id} is not BLOCKED"}))
+                {"message": f"issue #{issue.id} is BLOCKED. Use `unblock` to continue or `approve` to accept current state."}))
             return
+        # Resume from non-BLOCKED active states (e.g., process interrupted)
         action = self._infer_blocked_stage(issue)
         self._log(issue.id, f"人类介入: resume → 重跑 {action}")
         if action == "design":
@@ -1397,7 +1398,7 @@ class Engine:
             await self._on_develop(msg)
         else:
             await self.bus.publish(Message(MessageType.EVT_ERROR,
-                {"message": f"cannot infer blocked stage for issue #{issue.id}"}))
+                {"message": f"cannot infer stage for issue #{issue.id}"}))
 
     async def _on_approve(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
