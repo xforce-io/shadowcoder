@@ -850,3 +850,74 @@ async def test_acceptance_fail_escalates_to_reviewer(bus, config, store, task_mg
     assert mock_agent.review.call_count >= 1, (
         f"Expected reviewer to be called for acceptance escalation, "
         f"but review was called {mock_agent.review.call_count} times")
+
+
+def test_review_blames_acceptance_detects_marker():
+    """_review_blames_acceptance returns True when comment contains target marker."""
+    review_with_marker = ReviewOutput(
+        comments=[
+            ReviewComment(severity=Severity.HIGH,
+                          message="[TARGET:acceptance_script] The assertion for '1 - - 2' is wrong"),
+        ],
+        reviewer="mock")
+    review_without_marker = ReviewOutput(
+        comments=[
+            ReviewComment(severity=Severity.HIGH, message="Code has a bug in parser"),
+        ],
+        reviewer="mock")
+
+    assert Engine._review_blames_acceptance(review_with_marker) is True
+    assert Engine._review_blames_acceptance(review_without_marker) is False
+
+
+@pytest.mark.asyncio
+async def test_acceptance_blame_causes_blocked(bus, config, store, task_mgr, tmp_repo):
+    """Reviewer blames acceptance script → issue transitions to BLOCKED."""
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="low")),
+        develop=AsyncMock(return_value=DevelopOutput(summary="code")),
+        # Reviewer returns comment with acceptance_script target
+        review=AsyncMock(return_value=ReviewOutput(
+            comments=[ReviewComment(
+                severity=Severity.HIGH,
+                message="[TARGET:acceptance_script] '1 - - 2' is a valid expression, "
+                        "acceptance script wrongly expects ValueError")],
+            reviewer="mock")),
+    )
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, registry, config, str(tmp_repo))
+
+    issue = store.create("Test acceptance blame")
+    store.update_section(1, "需求", "implement foo")
+    store.update_section(1, "设计", "design foo")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+
+    # Acceptance script that always fails
+    acc_path = Path(store.base) / "0001" / "acceptance.sh"
+    acc_path.write_text(
+        "#!/bin/bash\nset -euo pipefail\necho 'Expected ValueError for x'\nexit 1\n")
+
+    # Mock _run_command to simulate acceptance failure (avoids needing real worktree)
+    engine._run_command = AsyncMock(
+        return_value=(False, "Expected ValueError for x"))
+    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._get_code_diff = AsyncMock(return_value="diff content")
+    engine._extract_error_summary = AsyncMock(return_value="Expected ValueError for x")
+
+    failed_events = []
+    bus.subscribe(MessageType.EVT_TASK_FAILED, lambda m: failed_events.append(m))
+
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.BLOCKED
+    assert len(failed_events) >= 1
+    assert "acceptance script" in failed_events[-1].payload["reason"]
+
+    # Check log mentions acceptance script
+    log = store.get_log(1)
+    assert "acceptance script" in log.lower()

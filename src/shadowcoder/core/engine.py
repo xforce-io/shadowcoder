@@ -349,6 +349,14 @@ class Engine:
                 diff += f"\n\n=== NEW FILE: {fpath} ===\n{full.read_text(errors='replace')}"
         return diff
 
+    @staticmethod
+    def _review_blames_acceptance(review) -> bool:
+        """Check if reviewer identified the acceptance script as the problem."""
+        if not review or not review.comments:
+            return False
+        marker = "[TARGET:acceptance_script]"
+        return any(marker.lower() in c.message.lower() for c in review.comments)
+
     def _review_decision(self, review) -> str:
         """Decide based on comment severity counts.
 
@@ -1059,9 +1067,21 @@ class Engine:
                                     "forcing root cause analysis via reviewer")
                                 self._log(issue.id,
                                     "Acceptance 连续失败，升级给 reviewer 分析")
-                                await self._escalate_to_reviewer(
+                                review = await self._escalate_to_reviewer(
                                     issue, task, round_num,
                                     acc_output, last_gate_summary)
+                                if review and self._review_blames_acceptance(review):
+                                    self._log(issue.id,
+                                        "Reviewer 判定 acceptance script 有误 → BLOCKED，需人类介入修正验收标准")
+                                    self.issue_store.transition_status(
+                                        issue.id, IssueStatus.BLOCKED)
+                                    task.status = TaskStatus.FAILED
+                                    await self.bus.publish(Message(
+                                        MessageType.EVT_TASK_FAILED, {
+                                            "issue_id": issue.id,
+                                            "task_id": task.task_id,
+                                            "reason": "acceptance script may be incorrect — reviewer flagged it"}))
+                                    return
                             last_error_hash = new_hash
                         last_gate_output = acc_output
                         issue = self.issue_store.get(issue.id)
