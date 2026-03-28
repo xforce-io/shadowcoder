@@ -387,19 +387,53 @@ class BaseAgent(ABC):
     async def write_acceptance_script(self, request: AgentRequest) -> AcceptanceOutput:
         call = self.prepare_write_acceptance_script(request)
         result, usage = await self._run(call.prompt, cwd=call.cwd, system_prompt=call.system_prompt)
-        # Extract script: strip markdown fences if present
-        script = result.strip()
-        if script.startswith("```"):
-            lines = script.splitlines()
-            # Remove first line (```bash or ```) and last line (```)
-            if lines[-1].strip() == "```":
-                lines = lines[1:-1]
-            else:
-                lines = lines[1:]
-            script = "\n".join(lines)
+
+        # Agent mode: the model may write a script file instead of returning
+        # the script as text.  Check the worktree for script files first.
+        script = self._find_written_script(call.cwd)
+        if not script:
+            script = self._extract_bash_script(result)
+        return AcceptanceOutput(script=script, usage=usage)
+
+    @staticmethod
+    def _find_written_script(cwd: str | None) -> str | None:
+        """Look for a bash script the agent wrote into the worktree."""
+        if not cwd:
+            return None
+        from pathlib import Path
+        candidates = [
+            "acceptance_test.sh",
+            "acceptance.sh",
+            "test_acceptance.sh",
+        ]
+        for name in candidates:
+            p = Path(cwd) / name
+            if p.exists():
+                content = p.read_text(encoding="utf-8")
+                if content.strip().startswith("#!"):
+                    # Clean up — remove the file so it doesn't pollute the worktree
+                    p.unlink()
+                    return content.strip()
+        return None
+
+    @staticmethod
+    def _extract_bash_script(text: str) -> str:
+        """Extract a bash script from model output that may contain commentary."""
+        import re
+        # Try to find a fenced code block (```bash, ```sh, or bare ```)
+        # that contains a bash script.  Pick the longest match so we grab
+        # the real script, not a one-liner example.
+        pattern = r"```(?:bash|sh)?\s*\n(.*?)```"
+        blocks = re.findall(pattern, text, re.DOTALL)
+        if blocks:
+            # Pick the longest code block — most likely the full script
+            script = max(blocks, key=len).strip()
+        else:
+            # No fenced block — treat the whole output as the script
+            script = text.strip()
         if not script.startswith("#!"):
             script = "#!/bin/bash\nset -euo pipefail\n\n" + script
-        return AcceptanceOutput(script=script, usage=usage)
+        return script
 
     # ------------------------------------------------------------------ #
     #  Utilities                                                           #

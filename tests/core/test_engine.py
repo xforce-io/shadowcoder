@@ -169,7 +169,7 @@ async def test_develop_happy_path(bus, store, task_mgr, registry_with, config):
     # Gate check: _gate_check will call _detect_test_command which may fail if no
     # project files are found. Mock _gate_check to always pass.
     engine = make_engine(bus, store, task_mgr, registry_with, config)
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -526,7 +526,7 @@ async def test_design_low_feasibility_blocks(bus, store, task_mgr, config):
 async def test_run_full_lifecycle(bus, store, task_mgr, registry_with, config):
     """CMD_RUN: create → design → develop → done in one command."""
     engine = make_engine(bus, store, task_mgr, registry_with, config)
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -547,7 +547,7 @@ async def test_run_full_lifecycle(bus, store, task_mgr, registry_with, config):
 async def test_run_existing_issue(bus, store, task_mgr, registry_with, config):
     """CMD_RUN on existing APPROVED issue: only develop runs."""
     engine = make_engine(bus, store, task_mgr, registry_with, config)
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -586,8 +586,8 @@ async def test_gate_fail_escalation(bus, store, task_mgr, config):
         nonlocal call_count
         call_count += 1
         if call_count <= 2:
-            return False, "tests failed", "error output here"
-        return True, "gate passed", "all tests pass"
+            return False, "tests failed", "error output here", 0.0
+        return True, "gate passed", "all tests pass", 0.0
     engine._gate_check = mock_gate
     engine._get_code_diff = AsyncMock(return_value="diff content")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
@@ -681,7 +681,7 @@ async def test_gate_uses_design_test_command(bus, store, task_mgr, registry_with
     # Gate should use "echo TESTS_PASS" and succeed
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        passed, msg, output = await engine._gate_check(1, td, [])
+        passed, msg, output, _elapsed = await engine._gate_check(1, td, [])
         assert passed
         assert "TESTS_PASS" in output
 
@@ -693,7 +693,7 @@ async def test_gate_fallback_without_design_test_command(bus, store, task_mgr, r
 
     import tempfile
     with tempfile.TemporaryDirectory() as td:
-        passed, msg, output = await engine._gate_check(1, td, [])
+        passed, msg, output, _elapsed = await engine._gate_check(1, td, [])
         assert not passed
         assert "Cannot detect test command" in msg
 
@@ -812,6 +812,50 @@ async def test_acceptance_script_syntax_validation(bus, config, store, task_mgr,
 
 
 @pytest.mark.asyncio
+async def test_acceptance_syntax_error_feedback_preserved(bus, config, store, task_mgr, tmp_repo):
+    """Syntax error feedback from attempt N must reach attempt N+1's prompt,
+    not the generic 'PASSED on unchanged code' message."""
+    bad_script = AcceptanceOutput(
+        script="#!/bin/bash\nVersionService interface {\n  not valid bash\n}\n")
+    good_script = AcceptanceOutput(
+        script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
+    responses = [bad_script, good_script]
+    call_index = 0
+    captured_requests = []
+
+    async def capture_and_call(request):
+        nonlocal call_index
+        captured_requests.append(request)
+        result = responses[call_index]
+        call_index += 1
+        return result
+
+    mock_agent = _make_mock_agent()
+    mock_agent.write_acceptance_script = AsyncMock(side_effect=capture_and_call)
+    mock_agent.prepare_write_acceptance_script = MagicMock(return_value=MagicMock(
+        prompt="p", cwd=str(tmp_repo), system_prompt="s", session_id=None, resume_id=None))
+
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, reg, config, str(tmp_repo))
+
+    issue = store.create("Test issue")
+    from shadowcoder.core.models import Task
+    task = Task(task_id="t1", issue_id=issue.id, repo_path=str(tmp_repo),
+                action="acceptance", agent_name="mock",
+                worktree_path=str(tmp_repo), status=TaskStatus.RUNNING)
+
+    await engine._run_acceptance_phase(issue, task)
+    assert len(captured_requests) == 2
+    # The retry request must contain syntax error feedback, not "PASSED"
+    retry_ctx = captured_requests[1].context
+    assert "pre_gate_failure" in retry_ctx
+    assert "SYNTAX ERROR" in retry_ctx["pre_gate_failure"]
+    assert "PASSED on unchanged code" not in retry_ctx["pre_gate_failure"]
+
+
+@pytest.mark.asyncio
 async def test_gate_failure_extraction_and_hash_tracking(bus, config, store, task_mgr, tmp_repo):
     """Full flow: gate fails → extract summary → hash → detect repeat → escalate."""
     mock_agent = _make_mock_agent(
@@ -871,9 +915,9 @@ async def test_acceptance_fail_escalates_to_reviewer(bus, config, store, task_mg
 
     # Mock _run_command to simulate acceptance failure (avoids needing real worktree)
     engine._run_command = AsyncMock(
-        return_value=(False, "Expected ValueError for x"))
+        return_value=(False, "Expected ValueError for x", 0.0))
     # Mock gate to pass (we want to test acceptance failure, not gate failure)
-    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff content")
     # Mock _extract_error_summary to return consistent output (triggers same-error detection)
     engine._extract_error_summary = AsyncMock(return_value="Expected ValueError for x")
@@ -937,8 +981,8 @@ async def test_acceptance_blame_causes_blocked(bus, config, store, task_mgr, tmp
 
     # Mock _run_command to simulate acceptance failure (avoids needing real worktree)
     engine._run_command = AsyncMock(
-        return_value=(False, "Expected ValueError for x"))
-    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+        return_value=(False, "Expected ValueError for x", 0.0))
+    engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff content")
     engine._extract_error_summary = AsyncMock(return_value="Expected ValueError for x")
 
@@ -991,10 +1035,10 @@ async def test_unblock_acceptance_bug_skips_develop(bus, config, store, task_mgr
     acc_path = Path(store.base) / "0001" / "acceptance.sh"
     acc_path.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
 
-    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff")
     # Mock _run_command so acceptance check passes without real bash
-    engine._run_command = AsyncMock(return_value=(True, "all passed"))
+    engine._run_command = AsyncMock(return_value=(True, "all passed", 0.0))
 
     await bus.publish(Message(MessageType.CMD_UNBLOCK, {
         "issue_id": 1, "message": "fixed acceptance script"}))
@@ -1075,9 +1119,9 @@ async def test_unblock_restores_develop(bus, config, store, task_mgr, tmp_repo):
     acc_path = Path(store.base) / "0001" / "acceptance.sh"
     acc_path.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
 
-    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff")
-    engine._run_command = AsyncMock(return_value=(True, ""))
+    engine._run_command = AsyncMock(return_value=(True, "", 0.0))
 
     await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
 
@@ -1118,9 +1162,9 @@ async def test_unblock_with_message_logs(bus, config, store, task_mgr, tmp_repo)
 
     acc_path = Path(store.base) / "0001" / "acceptance.sh"
     acc_path.write_text("#!/bin/bash\nexit 0\n")
-    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff")
-    engine._run_command = AsyncMock(return_value=(True, ""))
+    engine._run_command = AsyncMock(return_value=(True, "", 0.0))
 
     await bus.publish(Message(MessageType.CMD_UNBLOCK, {
         "issue_id": 1, "message": "fixed acceptance script"}))

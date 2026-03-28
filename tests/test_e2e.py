@@ -189,7 +189,7 @@ def e2e_system(e2e_repo, e2e_config, e2e_agent):
     engine = Engine(bus, issue_store, task_manager, registry, e2e_config, str(e2e_repo))
     # Mock gate and diff (no real test suite in e2e test repo)
     from unittest.mock import AsyncMock
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
 
     return {

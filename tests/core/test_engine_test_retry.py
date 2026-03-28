@@ -73,8 +73,8 @@ async def test_develop_gate_fail_then_pass(bus, store, task_mgr, config):
         nonlocal gate_call_count
         gate_call_count += 1
         if gate_call_count == 1:
-            return False, "build failed", "error output"
-        return True, "gate passed", "ok"
+            return False, "build failed", "error output", 0.0
+        return True, "gate passed", "ok", 0.0
 
     agent = AsyncMock()
     agent.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
@@ -106,7 +106,7 @@ async def test_develop_gate_always_fail_blocked(bus, store, task_mgr, config):
     reg.get = MagicMock(return_value=agent)
 
     engine = make_engine(bus, store, task_mgr, reg, config)
-    engine._gate_check = AsyncMock(return_value=(False, "tests failed", ""))
+    engine._gate_check = AsyncMock(return_value=(False, "tests failed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -144,7 +144,7 @@ async def test_develop_review_critical_retries(bus, store, task_mgr, config):
     reg.get = MagicMock(return_value=agent)
 
     engine = make_engine(bus, store, task_mgr, reg, config)
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -170,7 +170,7 @@ async def test_develop_review_conditional_pass(bus, store, task_mgr, config):
     reg.get = MagicMock(return_value=agent)
 
     engine = make_engine(bus, store, task_mgr, reg, config)
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 

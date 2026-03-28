@@ -576,7 +576,7 @@ worktree:
     engine = Engine(bus, issue_store, task_manager, registry, config, str(playground))
     # Mock gate and diff (no real test suite in this repo)
     from unittest.mock import AsyncMock
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
 
     # Collect all events for verification

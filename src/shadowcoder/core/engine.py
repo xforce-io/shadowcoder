@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import logging
 import re as _re
+import time
 import uuid
 from pathlib import Path
 
@@ -93,8 +94,9 @@ class Engine:
             for phase, phase_usages in phases.items():
                 p_cost = sum(u.cost_usd or 0 for u in phase_usages)
                 p_calls = len(phase_usages)
+                p_time = sum(u.duration_ms for u in phase_usages) / 1000
                 pct = (p_cost / cost * 100) if cost > 0 else 0
-                lines.append(f"  {phase}: {p_calls} calls, ${p_cost:.4f} ({pct:.0f}%)")
+                lines.append(f"  {phase}: {p_calls} calls, ${p_cost:.4f} ({pct:.0f}%), {p_time:.1f}s")
 
         return "\n".join(lines)
 
@@ -243,8 +245,9 @@ class Engine:
         except Exception:
             return self._truncate_output(raw_output)
 
-    async def _run_command(self, cmd: str, cwd: str) -> tuple[bool, str]:
-        """Run a shell command, return (passed, output)."""
+    async def _run_command(self, cmd: str, cwd: str) -> tuple[bool, str, float]:
+        """Run a shell command, return (passed, output, elapsed_seconds)."""
+        t0 = time.monotonic()
         proc = await asyncio.create_subprocess_shell(
             cmd,
             cwd=cwd,
@@ -252,13 +255,15 @@ class Engine:
             stderr=asyncio.subprocess.STDOUT,
         )
         stdout, _ = await proc.communicate()
+        elapsed = time.monotonic() - t0
         output = stdout.decode("utf-8", errors="replace")
         passed = proc.returncode == 0
-        return passed, output
+        return passed, output, elapsed
 
     async def _gate_check(self, issue_id: int, worktree_path: str,
-                          proposed_tests: list) -> tuple[bool, str, str]:
-        """Symbolic gate: run test command, verify acceptance tests executed and passed."""
+                          proposed_tests: list) -> tuple[bool, str, str, float]:
+        """Symbolic gate: run test command, verify acceptance tests executed and passed.
+        Returns (passed, message, output, elapsed_seconds)."""
         test_cmd = self.config.get_test_command()
         profile = None
         if not test_cmd:
@@ -267,12 +272,12 @@ class Engine:
             test_cmd = fb.get("test_command")
         if not test_cmd:
             if not worktree_path:
-                return True, "no worktree, gate skipped", ""
+                return True, "no worktree, gate skipped", "", 0.0
             profile = detect_language(worktree_path)
             if not profile:
                 return False, (
                     f"Cannot detect test command for {worktree_path}. "
-                    f"Set build.test_command in config."), ""
+                    f"Set build.test_command in config."), "", 0.0
             test_cmd = profile.test_command
 
         # If we need to verify proposed tests, ensure verbose output so test
@@ -286,9 +291,9 @@ class Engine:
             elif "-v" not in test_cmd:
                 gate_cmd = test_cmd.rstrip() + " -v"
 
-        passed, output = await self._run_command(gate_cmd, cwd=worktree_path)
+        passed, output, gate_elapsed = await self._run_command(gate_cmd, cwd=worktree_path)
         if not passed:
-            return False, "build/tests failed", output
+            return False, "build/tests failed", output, gate_elapsed
 
         # Check for stray files
         try:
@@ -331,9 +336,9 @@ class Engine:
                     not_passed.append(f"{name} (failed individual run)")
 
         if not_passed:
-            return False, f"acceptance tests not passed: {not_passed}", output
+            return False, f"acceptance tests not passed: {not_passed}", output, gate_elapsed
 
-        return True, "gate passed", output
+        return True, "gate passed", output, gate_elapsed
 
     async def _run_individual_test(self, name: str, profile, worktree_path: str) -> bool:
         """Try running a single test by name. Returns True if it passes."""
@@ -342,7 +347,7 @@ class Engine:
         else:
             # Fallback: try pytest -k for Python projects
             cmd = f"python -m pytest -k {name} -v 2>&1"
-        ok, _ = await self._run_command(cmd, cwd=worktree_path)
+        ok, _, _elapsed = await self._run_command(cmd, cwd=worktree_path)
         return ok
 
     async def _get_untracked_files(self, worktree_path: str) -> list[str]:
@@ -705,6 +710,9 @@ class Engine:
                     reviewer.prepare_review(request))
                 review = await self._review_with_retry(reviewer, request)
                 self._track_usage(issue.id, review.usage, phase=f"{action}_review")
+                if review.usage:
+                    self._log(issue.id,
+                        f"Review ({rname}): {review.usage.duration_ms / 1000:.1f}s")
                 self.issue_store.append_review(issue.id, review_section_key, review)
                 last_review = review
                 decision = self._review_decision(review)
@@ -759,7 +767,8 @@ class Engine:
                 if output.usage:
                     self._log(issue.id,
                         f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
-                        f"${output.usage.cost_usd or 0:.4f}")
+                        f"${output.usage.cost_usd or 0:.4f}, "
+                        f"{output.usage.duration_ms / 1000:.1f}s")
                 if self._check_budget(issue.id):
                     summary = self._usage_summary(issue.id)
                     self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
@@ -878,6 +887,9 @@ class Engine:
             review = await reviewer.review(review_request)
             self._track_usage(issue.id, review.usage,
                               phase="gate_escalation", round_num=round_num)
+            if review.usage:
+                self._log(issue.id,
+                    f"Escalation review: {review.usage.duration_ms / 1000:.1f}s")
             self._update_feedback(issue.id, review, round_num,
                                   is_design_review=False)
             self.issue_store.append_review(issue.id, "Dev Review", review)
@@ -898,6 +910,7 @@ class Engine:
         acceptance_path = self._acceptance_script_path(issue.id)
         max_attempts = 3
         self._last_acceptance_output = ""
+        last_failure_feedback = ""
 
         for attempt in range(1, max_attempts + 1):
             # Write or rewrite acceptance script
@@ -909,15 +922,8 @@ class Engine:
                 "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
                 "feedback_summary": self._format_feedback_for_agent(issue.id),
             }
-            if attempt > 1:
-                ctx["pre_gate_failure"] = (
-                    f"Your acceptance script PASSED on unchanged code. "
-                    f"This means your assertions don't test the actual problem.\n\n"
-                    f"Script content:\n{acceptance_path.read_text(encoding='utf-8')}\n\n"
-                    f"Execution output:\n{self._last_acceptance_output}\n\n"
-                    f"Analyze WHY it passed. Write stronger assertions that "
-                    f"will FAIL until the fix/feature is implemented."
-                )
+            if last_failure_feedback:
+                ctx["pre_gate_failure"] = last_failure_feedback
 
             request = AgentRequest(
                 action="write_acceptance_script", issue=issue, context=ctx)
@@ -936,16 +942,20 @@ class Engine:
 
             self._track_usage(issue.id, output.usage,
                               phase="acceptance", round_num=attempt)
+            if output.usage:
+                self._log(issue.id,
+                    f"Acceptance writer: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
+                    f"{output.usage.duration_ms / 1000:.1f}s")
             acceptance_path.write_text(output.script, encoding="utf-8")
 
             # Validate bash syntax before execution
-            syntax_ok, syntax_err = await self._run_command(
+            syntax_ok, syntax_err, _elapsed = await self._run_command(
                 f"bash -n {acceptance_path}", cwd=task.worktree_path)
             if not syntax_ok:
                 self._log(issue.id,
                     f"Acceptance script bash 语法错误 (attempt {attempt}/{max_attempts}): "
                     f"{syntax_err[:200]}")
-                ctx["pre_gate_failure"] = (
+                last_failure_feedback = (
                     f"Your acceptance script has bash SYNTAX ERRORS:\n"
                     f"{syntax_err}\n\n"
                     f"Script content:\n{output.script}\n\n"
@@ -954,18 +964,26 @@ class Engine:
                 continue
 
             # Pre-gate: script must FAIL
-            passed, exec_output = await self._run_command(
+            passed, exec_output, acc_elapsed = await self._run_command(
                 f"bash {acceptance_path}", cwd=task.worktree_path)
             self._last_acceptance_output = exec_output
 
             if not passed:
                 self._log(issue.id,
-                    f"Pre-gate: acceptance script FAIL (expected) ✓")
+                    f"Pre-gate: acceptance script FAIL (expected) ✓ ({acc_elapsed:.1f}s)")
                 return True
 
             self._log(issue.id,
                 f"Pre-gate: acceptance script PASS — too weak "
                 f"(attempt {attempt}/{max_attempts})")
+            last_failure_feedback = (
+                f"Your acceptance script PASSED on unchanged code. "
+                f"This means your assertions don't test the actual problem.\n\n"
+                f"Script content:\n{acceptance_path.read_text(encoding='utf-8')}\n\n"
+                f"Execution output:\n{self._last_acceptance_output}\n\n"
+                f"Analyze WHY it passed. Write stronger assertions that "
+                f"will FAIL until the fix/feature is implemented."
+            )
 
         # Exhausted retries
         self._log(issue.id,
@@ -1078,12 +1096,12 @@ class Engine:
                 # Acceptance check (must PASS after develop)
                 acceptance_path = self._acceptance_script_path(issue.id)
                 if acceptance_path.exists():
-                    acc_passed, acc_output = await self._run_command(
+                    acc_passed, acc_output, acc_elapsed = await self._run_command(
                         f"bash {acceptance_path}", cwd=task.worktree_path)
                     if not acc_passed:
                         gate_fail_count += 1
                         self._log(issue.id,
-                            f"Acceptance FAIL ({gate_fail_count}): "
+                            f"Acceptance FAIL ({gate_fail_count}, {acc_elapsed:.1f}s): "
                             f"验收断言未通过，问题尚未解决")
                         if acc_output:
                             acc_summary = await self._extract_error_summary(
@@ -1112,14 +1130,14 @@ class Engine:
                         last_gate_output = acc_output
                         issue = self.issue_store.get(issue.id)
                         continue  # retry develop
-                    self._log(issue.id, "Acceptance PASS ✓")
+                    self._log(issue.id, f"Acceptance PASS ✓ ({acc_elapsed:.1f}s)")
 
                 # Gate (symbolic)
-                gate_ok, gate_msg, gate_output = await self._gate_check(
+                gate_ok, gate_msg, gate_output, gate_elapsed = await self._gate_check(
                     issue.id, task.worktree_path, proposed_tests)
                 if not gate_ok:
                     gate_fail_count += 1
-                    self._log(issue.id, f"Gate FAIL ({gate_fail_count}): {gate_msg}")
+                    self._log(issue.id, f"Gate FAIL ({gate_fail_count}, {gate_elapsed:.1f}s): {gate_msg}")
                     if gate_output:
                         gate_summary = await self._extract_error_summary(
                             gate_output, issue_id=issue.id)
@@ -1152,7 +1170,7 @@ class Engine:
                     issue = self.issue_store.get(issue.id)
                     continue  # back to develop, skip review
 
-                self._log(issue.id, f"Gate PASS R{round_num}")
+                self._log(issue.id, f"Gate PASS R{round_num} ({gate_elapsed:.1f}s)")
                 gate_fail_count = 0  # reset on gate pass
                 last_gate_output = ""
 
@@ -1263,12 +1281,13 @@ class Engine:
             try:
                 pf = await agent.preflight(request)
                 self._track_usage(issue.id, pf.usage, phase="preflight")
+                pf_dur = f" ({pf.usage.duration_ms / 1000:.1f}s)" if pf.usage else ""
                 pf_summary = (f"Feasibility: {pf.feasibility} | "
                              f"Complexity: {pf.estimated_complexity} | "
                              f"Risks: {', '.join(pf.risks) or 'none identified'}")
                 if pf.tech_stack_recommendation:
                     pf_summary += f" | Tech: {pf.tech_stack_recommendation}"
-                self._log(issue.id, f"Preflight 评估\n{pf_summary}")
+                self._log(issue.id, f"Preflight 评估{pf_dur}\n{pf_summary}")
 
                 if pf.feasibility == "low":
                     self._log(issue.id, "Preflight: feasibility=low → BLOCKED，等待人类确认")

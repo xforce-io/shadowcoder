@@ -274,7 +274,7 @@ def system(integ_repo, integ_config, agent):
     registry._instances["claude-code"] = agent
 
     engine = Engine(bus, store, task_manager, registry, integ_config, str(integ_repo))
-    engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+    engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff --git a/foo.py")
     engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -511,8 +511,8 @@ class TestDevelopPhase:
         async def gate_fn(issue_id, worktree_path, proposed_tests):
             gate_count["n"] += 1
             if gate_count["n"] == 1:
-                return False, "build failed", "error: cannot find module"
-            return True, "gate passed", "all tests pass"
+                return False, "build failed", "error: cannot find module", 0.0
+            return True, "gate passed", "all tests pass", 0.0
 
         engine._gate_check = AsyncMock(side_effect=gate_fn)
         engine._run_acceptance_phase = AsyncMock(return_value=True)
@@ -536,8 +536,8 @@ class TestDevelopPhase:
         async def gate_fn(issue_id, worktree_path, proposed_tests):
             gate_count["n"] += 1
             if gate_count["n"] <= 2:
-                return False, "tests failed", "FAILED test_foo"
-            return True, "gate passed", "ok"
+                return False, "tests failed", "FAILED test_foo", 0.0
+            return True, "gate passed", "ok", 0.0
 
         engine._gate_check = AsyncMock(side_effect=gate_fn)
         engine._run_acceptance_phase = AsyncMock(return_value=True)
@@ -560,7 +560,7 @@ class TestDevelopPhase:
         bus, store, agent, engine = (
             system["bus"], system["store"], system["agent"], system["engine"])
 
-        engine._gate_check = AsyncMock(return_value=(False, "tests failed", "error"))
+        engine._gate_check = AsyncMock(return_value=(False, "tests failed", "error", 0.0))
         engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await self._setup_approved(bus, store)
@@ -775,14 +775,14 @@ class TestErrorRecovery:
         assert store.get(1).status == IssueStatus.APPROVED
 
         # Make gate always fail to block develop
-        engine._gate_check = AsyncMock(return_value=(False, "tests failed", "error"))
+        engine._gate_check = AsyncMock(return_value=(False, "tests failed", "error", 0.0))
         engine._run_acceptance_phase = AsyncMock(return_value=True)
 
         await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
         assert store.get(1).status == IssueStatus.BLOCKED
 
         # Fix gate and resume
-        engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+        engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
         engine._run_acceptance_phase = AsyncMock(return_value=True)
         agent.configure_review(agent._default_review)
 
@@ -834,7 +834,7 @@ class TestBudget:
         registry._instances["claude-code"] = agent
 
         engine = Engine(bus, store, task_manager, registry, integ_config_with_budget, str(integ_repo))
-        engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+        engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
         engine._get_code_diff = AsyncMock(return_value="")
         engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -867,7 +867,7 @@ class TestBudget:
         registry._instances["claude-code"] = agent
 
         engine = Engine(bus, store, task_manager, registry, integ_config_with_budget, str(integ_repo))
-        engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+        engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
         engine._get_code_diff = AsyncMock(return_value="")
         engine._run_acceptance_phase = AsyncMock(return_value=True)
 
@@ -1558,8 +1558,8 @@ class TestSessionResume:
         async def gate_fn(issue_id, worktree_path, proposed_tests):
             gate_count["n"] += 1
             if gate_count["n"] == 1:
-                return False, "tests failed", "error output"
-            return True, "gate passed", "ok"
+                return False, "tests failed", "error output", 0.0
+            return True, "gate passed", "ok", 0.0
 
         engine._gate_check = AsyncMock(side_effect=gate_fn)
         engine._run_acceptance_phase = AsyncMock(return_value=True)
@@ -1677,10 +1677,10 @@ class TestGateStrayFiles:
             (Path(task.worktree_path) / "pyproject.toml").write_text("[project]\nname='test'\n")
 
         # Mock _run_command to simulate passing tests
-        env["engine"]._run_command = AsyncMock(return_value=(True, "all passed"))
+        env["engine"]._run_command = AsyncMock(return_value=(True, "all passed", 0.0))
 
         # Run gate check
-        ok, msg, output = await env["engine"]._gate_check(
+        ok, msg, output, _elapsed = await env["engine"]._gate_check(
             issue.id, task.worktree_path, [])
         assert "WARNING" in output or "Stray" in output
 
@@ -1885,7 +1885,7 @@ worktree:
         registry = AgentRegistry(confirm_config)
         registry._instances["claude-code"] = agent
         engine = Engine(bus, store, task_manager, registry, confirm_config, str(integ_repo))
-        engine._gate_check = AsyncMock(return_value=(True, "gate passed", ""))
+        engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
         engine._get_code_diff = AsyncMock(return_value="diff --git a/foo.py")
         # Do NOT mock _run_acceptance_phase — let it run (but mock the agent)
         return {
