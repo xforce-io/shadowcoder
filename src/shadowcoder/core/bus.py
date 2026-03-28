@@ -17,6 +17,7 @@ class MessageType(Enum):
     CMD_INFO = "cmd.info"
     CMD_RESUME = "cmd.resume"
     CMD_APPROVE = "cmd.approve"
+    CMD_UNBLOCK = "cmd.unblock"
     CMD_CANCEL = "cmd.cancel"
     CMD_CLEANUP = "cmd.cleanup"
     CMD_ITERATE = "cmd.iterate"
