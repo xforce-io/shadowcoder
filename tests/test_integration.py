@@ -750,7 +750,7 @@ class TestErrorRecovery:
         assert store.get(1).status == IssueStatus.DONE
 
     async def test_blocked_issue_resume_design(self, system):
-        """Design BLOCKED → resume → re-runs design → passes."""
+        """Design BLOCKED → unblock → re-runs design → passes."""
         bus, store, agent = system["bus"], system["store"], system["agent"]
         config = system["config"]
 
@@ -761,8 +761,8 @@ class TestErrorRecovery:
         await bus.publish(Message(MessageType.CMD_DESIGN, {"issue_id": 1}))
         assert store.get(1).status == IssueStatus.BLOCKED
 
-        # Resume — agent review counter is past fail_count now
-        await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
+        # Unblock — agent review counter is past fail_count now
+        await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
         assert store.get(1).status == IssueStatus.APPROVED
 
     async def test_blocked_issue_resume_develop(self, system):
@@ -786,7 +786,7 @@ class TestErrorRecovery:
         engine._run_acceptance_phase = AsyncMock(return_value=True)
         agent.configure_review(agent._default_review)
 
-        await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
+        await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
         assert store.get(1).status == IssueStatus.DONE
 
     async def test_approve_non_blocked_is_error(self, system):
@@ -802,7 +802,7 @@ class TestErrorRecovery:
         assert "not BLOCKED" in events[MessageType.EVT_ERROR][0].payload["message"]
 
     async def test_resume_non_blocked_is_error(self, system):
-        """Resume on non-BLOCKED issue → error event."""
+        """Resume on CREATED issue → error (cannot infer stage)."""
         bus, store = system["bus"], system["store"]
         events = _collect_events(bus)
 
@@ -811,7 +811,7 @@ class TestErrorRecovery:
         await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
 
         assert len(events[MessageType.EVT_ERROR]) == 1
-        assert "not BLOCKED" in events[MessageType.EVT_ERROR][0].payload["message"]
+        assert "cannot infer" in events[MessageType.EVT_ERROR][0].payload["message"]
 
 
 # ===========================================================================
@@ -1918,8 +1918,8 @@ worktree:
         # Record acceptance call count before resume
         acc_calls_before = len(env["agent"].preflight_calls)
 
-        # Resume → should enter develop loop (skipping acceptance regeneration)
-        await env["bus"].publish(Message(MessageType.CMD_RESUME,
+        # Unblock → should enter develop loop (skipping acceptance regeneration)
+        await env["bus"].publish(Message(MessageType.CMD_UNBLOCK,
             {"issue_id": issue.id}))
         issue = env["store"].get(issue.id)
         assert issue.status == IssueStatus.DONE

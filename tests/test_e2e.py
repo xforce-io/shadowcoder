@@ -376,8 +376,8 @@ async def test_e2e_review_exhaustion_and_resume(e2e_system):
 
     assert store.get(1).status == IssueStatus.BLOCKED
 
-    # Resume — review counter is past fail_count, so next reviews will pass
-    await bus.publish(Message(MessageType.CMD_RESUME, {"issue_id": 1}))
+    # Unblock — review counter is past fail_count, so next reviews will pass
+    await bus.publish(Message(MessageType.CMD_UNBLOCK, {"issue_id": 1}))
 
     assert store.get(1).status == IssueStatus.APPROVED
 
