@@ -806,3 +806,47 @@ async def test_gate_failure_extraction_and_hash_tracking(bus, config, store, tas
     h2 = Engine._error_hash(summary)
     assert h1 == h2
     assert len(h1) == 16  # sha256 truncated to 16 hex chars
+
+
+@pytest.mark.asyncio
+async def test_acceptance_fail_escalates_to_reviewer(bus, config, store, task_mgr, tmp_repo):
+    """Acceptance fails with same error twice → reviewer gets called for analysis."""
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="low")),
+        develop=AsyncMock(return_value=DevelopOutput(summary="code")),
+        review=AsyncMock(return_value=ReviewOutput(
+            comments=[ReviewComment(severity=Severity.MEDIUM, message="looks ok")],
+            reviewer="mock")),
+    )
+    registry = MagicMock()
+    registry.get = MagicMock(return_value=mock_agent)
+    engine = Engine(bus, store, task_mgr, registry, config, str(tmp_repo))
+
+    issue = store.create("Test acceptance escalation")
+    store.update_section(1, "需求", "implement foo")
+    store.update_section(1, "设计", "design foo")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+
+    # Write an acceptance script that always fails with a consistent error
+    acc_path = Path(store.base) / "0001" / "acceptance.sh"
+    acc_path.write_text(
+        "#!/bin/bash\nset -euo pipefail\necho 'Expected ValueError for x'\nexit 1\n")
+
+    # Mock _run_command to simulate acceptance failure (avoids needing real worktree)
+    engine._run_command = AsyncMock(
+        return_value=(False, "Expected ValueError for x"))
+    # Mock gate to pass (we want to test acceptance failure, not gate failure)
+    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._get_code_diff = AsyncMock(return_value="diff content")
+    # Mock _extract_error_summary to return consistent output (triggers same-error detection)
+    engine._extract_error_summary = AsyncMock(return_value="Expected ValueError for x")
+
+    await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+    # Reviewer should have been called at least once for acceptance escalation
+    assert mock_agent.review.call_count >= 1, (
+        f"Expected reviewer to be called for acceptance escalation, "
+        f"but review was called {mock_agent.review.call_count} times")

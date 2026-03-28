@@ -550,8 +550,14 @@ class Engine:
         fb["items"] = items
         self.issue_store.save_feedback(issue_id, fb)
 
-    def _format_feedback_for_agent(self, issue_id: int) -> str:
-        """Format feedback state for injection into agent context."""
+    def _format_feedback_for_agent(self, issue_id: int,
+                                    round_num: int = 0,
+                                    has_gate_failure: bool = False) -> str:
+        """Format feedback state for injection into agent context.
+
+        When has_gate_failure is True, old feedback items are folded to a
+        single line so the developer can focus on fixing the gate error.
+        """
         fb = self.issue_store.load_feedback(issue_id)
         items = fb.get("items", [])
         if not items:
@@ -568,11 +574,20 @@ class Engine:
 
         if unresolved:
             lines.append(f"\n未解决 ({len(unresolved)}/{len(items)}):")
+            # In gate-failure context, fold old items to reduce noise
+            folded_count = 0
             for item in unresolved:
-                escalated = self._escalate_feedback_text(item)
                 intro = item["round_introduced"]
+                distance = round_num - intro if round_num else 0
+                if has_gate_failure and distance >= 2:
+                    folded_count += 1
+                    continue
+                escalated = self._escalate_feedback_text(item)
                 raised = item["times_raised"]
-                lines.append(f"  [R{intro}, {raised}次] #{item['id']} {escalated}")
+                dist_hint = f", {distance}轮前" if distance >= 2 else ""
+                lines.append(f"  [R{intro}, {raised}次{dist_hint}] #{item['id']} {escalated}")
+            if folded_count:
+                lines.append(f"  (另有 {folded_count} 条旧反馈待 gate 通过后复审)")
 
         return "\n".join(lines)
 
@@ -794,6 +809,46 @@ class Engine:
             await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
                 {"issue_id": issue.id, "task_id": task.task_id, "reason": str(e)}))
 
+    async def _escalate_to_reviewer(
+        self, issue, task, round_num: int,
+        failure_output: str, failure_summary: str,
+    ):
+        """Ask reviewer to analyze repeated failure (gate or acceptance)."""
+        reviewer_names = self.config.get_agent_for_phase("develop_review")
+        if not reviewer_names:
+            return None
+        reviewer = self.agents.get(reviewer_names[0])
+        try:
+            code_diff = ""
+            if task.worktree_path:
+                try:
+                    code_diff = await self._get_code_diff(task.worktree_path)
+                except Exception:
+                    pass
+
+            acceptance_path = self._acceptance_script_path(issue.id)
+            acceptance_script_content = ""
+            if acceptance_path.exists():
+                acceptance_script_content = acceptance_path.read_text(encoding="utf-8")
+
+            review_request = AgentRequest(action="review", issue=issue,
+                context={
+                    "worktree_path": task.worktree_path,
+                    "code_diff": code_diff,
+                    "gate_failure_output": failure_summary or self._truncate_output(failure_output),
+                    "acceptance_script": acceptance_script_content,
+                    "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
+                })
+            review = await reviewer.review(review_request)
+            self._track_usage(issue.id, review.usage,
+                              phase="gate_escalation", round_num=round_num)
+            self._update_feedback(issue.id, review, round_num,
+                                  is_design_review=False)
+            self.issue_store.append_review(issue.id, "Dev Review", review)
+            return review
+        except Exception:
+            return None
+
     def _acceptance_script_path(self, issue_id: int) -> Path:
         """Path for the acceptance test script."""
         return Path(self.issue_store.base) / f"{issue_id:04d}" / "acceptance.sh"
@@ -938,7 +993,9 @@ class Engine:
                     "worktree_path": task.worktree_path,
                     "gate_failure_summary": self._extract_gate_failure_summary(last_gate_output, task.worktree_path) if last_gate_output else "",
                     "latest_review": latest_review,
-                    "feedback_summary": self._format_feedback_for_agent(issue.id),
+                    "feedback_summary": self._format_feedback_for_agent(
+                        issue.id, round_num=round_num,
+                        has_gate_failure=bool(last_gate_summary)),
                     "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
                     "gate_output": last_gate_summary if last_gate_summary else "",
                 }
@@ -1000,7 +1057,11 @@ class Engine:
                                 self._log(issue.id,
                                     "Same error detected in consecutive rounds — "
                                     "forcing root cause analysis via reviewer")
-                                gate_fail_count = 2  # triggers existing escalation logic
+                                self._log(issue.id,
+                                    "Acceptance 连续失败，升级给 reviewer 分析")
+                                await self._escalate_to_reviewer(
+                                    issue, task, round_num,
+                                    acc_output, last_gate_summary)
                             last_error_hash = new_hash
                         last_gate_output = acc_output
                         issue = self.issue_store.get(issue.id)
@@ -1029,31 +1090,10 @@ class Engine:
                     last_gate_output = gate_output
 
                     if gate_fail_count >= 2:
-                        # Escalate: ask reviewer to analyze gate failure
                         self._log(issue.id, "Gate 连续失败，升级给 reviewer 分析")
-                        reviewer_names = self.config.get_agent_for_phase("develop_review")
-                        if reviewer_names:
-                            reviewer = self.agents.get(reviewer_names[0])
-                            try:
-                                code_diff_for_escalation = ""
-                                if task.worktree_path:
-                                    try:
-                                        code_diff_for_escalation = await self._get_code_diff(task.worktree_path)
-                                    except Exception:
-                                        pass
-                                review_request = AgentRequest(action="review", issue=issue,
-                                    context={
-                                        "worktree_path": task.worktree_path,
-                                        "code_diff": code_diff_for_escalation,
-                                        "gate_failure_output": last_gate_summary if last_gate_summary else self._truncate_output(gate_output),
-                                        "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
-                                    })
-                                review = await reviewer.review(review_request)
-                                self._track_usage(issue.id, review.usage, phase="gate_escalation", round_num=round_num)
-                                self._update_feedback(issue.id, review, round_num, is_design_review=False)
-                                self.issue_store.append_review(issue.id, "Dev Review", review)
-                            except Exception:
-                                pass  # reviewer analysis is best-effort
+                        await self._escalate_to_reviewer(
+                            issue, task, round_num,
+                            gate_output, last_gate_summary)
                         gate_fail_count = 0  # reset after escalation
 
                     issue = self.issue_store.get(issue.id)
