@@ -1314,16 +1314,28 @@ class Engine:
             issue.status = IssueStatus.APPROVED
             self.issue_store.save(issue)
 
-        # BLOCKED → infer which phase to resume
+        # BLOCKED → use blocked_from to restore, fallback to inference
         if issue.status == IssueStatus.BLOCKED:
-            stage = self._infer_blocked_stage(issue)
-            if stage == "develop":
-                self._log(issue_id, "run 恢复: BLOCKED → 继续 develop")
-                issue.status = IssueStatus.APPROVED
+            from_status = issue.blocked_from
+            if from_status:
+                self._log(issue_id,
+                    f"run 恢复: BLOCKED ({issue.blocked_reason}) → {from_status.value}")
+                issue.blocked_reason = None
+                issue.blocked_from = None
+                issue.status = from_status
                 self.issue_store.save(issue)
             else:
-                self._log(issue_id, "run 恢复: BLOCKED → 重跑 design")
-                issue.status = IssueStatus.CREATED
+                # Legacy fallback
+                stage = self._infer_blocked_stage(issue)
+                if stage == "develop":
+                    self._log(issue_id, "run 恢复: BLOCKED → 继续 develop")
+                    issue.status = IssueStatus.APPROVED
+                elif stage == "design":
+                    self._log(issue_id, "run 恢复: BLOCKED → 重跑 design")
+                    issue.status = IssueStatus.CREATED
+                else:
+                    self._log(issue_id, "run 停止: 无法推断 BLOCKED 阶段")
+                    return
                 self.issue_store.save(issue)
             issue = self.issue_store.get(issue_id)
 
