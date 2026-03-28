@@ -1137,9 +1137,16 @@ class Engine:
 
                     if gate_fail_count >= 2:
                         self._log(issue.id, "Gate 连续失败，升级给 reviewer 分析")
-                        await self._escalate_to_reviewer(
+                        review = await self._escalate_to_reviewer(
                             issue, task, round_num,
                             gate_output, last_gate_summary)
+                        if review and self._review_blames_acceptance(review):
+                            self._log(issue.id,
+                                "Reviewer 判定 acceptance script 有误 → BLOCKED，需人类介入修正验收标准")
+                            await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_BUG,
+                                from_status=IssueStatus.DEVELOPING,
+                                event_reason="acceptance script may be incorrect — reviewer flagged it")
+                            return
                         gate_fail_count = 0  # reset after escalation
 
                     issue = self.issue_store.get(issue.id)
