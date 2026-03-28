@@ -275,7 +275,18 @@ class Engine:
                     f"Set build.test_command in config."), ""
             test_cmd = profile.test_command
 
-        passed, output = await self._run_command(test_cmd, cwd=worktree_path)
+        # If we need to verify proposed tests, ensure verbose output so test
+        # names appear. Design-provided commands like "pytest -q" won't list
+        # individual test names, causing false "not found in output" failures.
+        gate_cmd = test_cmd
+        if proposed_tests and "pytest" in test_cmd:
+            # Replace -q with -v, or append -v if neither present
+            if "-q" in test_cmd:
+                gate_cmd = test_cmd.replace("-q", "-v")
+            elif "-v" not in test_cmd:
+                gate_cmd = test_cmd.rstrip() + " -v"
+
+        passed, output = await self._run_command(gate_cmd, cwd=worktree_path)
         if not passed:
             return False, "build/tests failed", output
 
@@ -303,18 +314,19 @@ class Engine:
         for tc in proposed_tests:
             name = tc["name"]
             if name not in output:
-                not_passed.append(f"{name} (not found in output)")
+                # Test name not in output — try running individually before failing
+                individual_ok = await self._run_individual_test(
+                    name, profile, worktree_path)
+                if not individual_ok:
+                    not_passed.append(f"{name} (not found in output)")
                 continue
             if any(f"{name}{pat}" in output for pat in skip_patterns):
                 not_passed.append(f"{name} (skipped/ignored)")
                 continue
             if not any(f"{name}{pat}" in output for pat in pass_patterns):
                 # Run individually as fallback
-                if profile:
-                    cmd = profile.individual_test_cmd.format(name=name)
-                    individual_ok, _ = await self._run_command(cmd, cwd=worktree_path)
-                else:
-                    individual_ok = False
+                individual_ok = await self._run_individual_test(
+                    name, profile, worktree_path)
                 if not individual_ok:
                     not_passed.append(f"{name} (failed individual run)")
 
@@ -322,6 +334,16 @@ class Engine:
             return False, f"acceptance tests not passed: {not_passed}", output
 
         return True, "gate passed", output
+
+    async def _run_individual_test(self, name: str, profile, worktree_path: str) -> bool:
+        """Try running a single test by name. Returns True if it passes."""
+        if profile and profile.individual_test_cmd:
+            cmd = profile.individual_test_cmd.format(name=name)
+        else:
+            # Fallback: try pytest -k for Python projects
+            cmd = f"python -m pytest -k {name} -v 2>&1"
+        ok, _ = await self._run_command(cmd, cwd=worktree_path)
+        return ok
 
     async def _get_untracked_files(self, worktree_path: str) -> list[str]:
         """Get list of untracked files in worktree."""
