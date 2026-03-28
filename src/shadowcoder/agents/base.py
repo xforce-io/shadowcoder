@@ -266,14 +266,24 @@ class BaseAgent(ABC):
             resume_id=request.context.get("resume_id"))
 
     def prepare_review(self, request: AgentRequest) -> PreparedCall:
+        is_escalation = bool(request.context.get("escalation"))
         is_develop_review = bool(request.context.get("code_diff"))
-        if is_develop_review:
+        if is_escalation:
+            context = self._build_review_context(request)
+            system = self._load_system_prompt("escalation_reviewer")
+            prompt = (
+                f"{context}\n\n"
+                f"Determine the root cause of the repeated failure: "
+                f"is the bug in the CODE or in the ACCEPTANCE SCRIPT?"
+            )
+        elif is_develop_review:
             context = self._build_review_context(request)
             system = self._load_system_prompt("code_reviewer")
+            prompt = f"{context}\n\nReview the current design/implementation against requirements."
         else:
             context = self._build_context(request)
             system = self._load_system_prompt("design_reviewer")
-        prompt = f"{context}\n\nReview the current design/implementation against requirements."
+            prompt = f"{context}\n\nReview the current design/implementation against requirements."
         return PreparedCall(
             action="review", system_prompt=system, prompt=prompt,
             cwd=request.context.get("worktree_path"))

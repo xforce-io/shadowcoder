@@ -89,7 +89,7 @@ Roles are loaded from `data/roles/<role>/` with overrides from
 | review (design) | `design_reviewer` | soul + instructions | `_build_context()` |
 | review (code) | `code_reviewer` | soul + instructions | `_build_review_context()` |
 | write_acceptance | `acceptance_writer` | soul + instructions | `_build_context()` |
-| escalation review | `code_reviewer` | soul + instructions | `_build_review_context()` |
+| escalation review | `escalation_reviewer` | soul + instructions | `_build_review_context()` |
 
 ### Review context (`_build_review_context`)
 
@@ -102,24 +102,25 @@ For code reviews (including escalation), the prompt includes:
 - Failure output (gate or acceptance)
 - Acceptance script content (when provided)
 
-### Escalation review — known limitations
+### Escalation review
 
 When acceptance or gate fails repeatedly with the same error, the engine
-escalates to the reviewer via `_escalate_to_reviewer()`. Currently this
-reuses the standard `code_reviewer` prompt, which has several issues:
+escalates to the `escalation_reviewer` via `_escalate_to_reviewer()`.
 
-1. **Conflicting framing**: The system prompt says "The code has already
-   passed build and all tests via the gate" — false during escalation.
-2. **Wrong task**: The prompt says "Review the current design/implementation"
-   — but escalation needs "Judge whether failure comes from code or script."
-3. **Conservative bias**: "When in doubt, flag the code, not the script"
-   discourages the reviewer from blaming the acceptance script even when
-   the evidence is clear.
-4. **No prompt dump**: `_escalate_to_reviewer()` doesn't call
-   `_dump_agent_context()`, making it hard to debug reviewer behavior.
+This uses a dedicated prompt (`data/roles/escalation_reviewer/`) that frames
+the task as "failure root cause adjudication" — binary judgment of whether
+the bug is in the code or the acceptance script. Key differences from the
+standard `code_reviewer`:
 
-Planned fix: dedicated escalation reviewer prompt that frames the task as
-"failure root cause adjudication" rather than "code quality review."
+- **Soul**: "失败根因裁判" not "代码评审专家" — must give a verdict, no hedging
+- **Task framing**: "Determine the root cause" not "Review the implementation"
+- **No conflicting signals**: does not claim code passed gate
+- **No conservative bias**: repeated failure is treated as evidence the script may be wrong
+- **Prompt dump**: `_escalate_to_reviewer()` calls `_dump_agent_context()` for debuggability
+
+If the reviewer identifies the acceptance script as the problem, it uses the
+`[TARGET:acceptance_script]` marker. The engine detects this and transitions
+to BLOCKED with `acceptance_script_bug` reason.
 
 ## Gate Behavior
 

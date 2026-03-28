@@ -846,7 +846,12 @@ class Engine:
                     "gate_failure_output": failure_summary or self._truncate_output(failure_output),
                     "acceptance_script": acceptance_script_content,
                     "unresolved_feedback": self._format_unresolved_for_reviewer(issue.id),
+                    "escalation": True,
                 })
+            self._dump_agent_context(
+                issue.id, "escalation_review", round_num, "develop",
+                reviewer_names[0], reviewer,
+                reviewer.prepare_review(review_request))
             review = await reviewer.review(review_request)
             self._track_usage(issue.id, review.usage,
                               phase="gate_escalation", round_num=round_num)
