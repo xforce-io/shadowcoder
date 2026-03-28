@@ -90,6 +90,7 @@ class IssueStore:
         if not path.exists():
             raise FileNotFoundError(f"Issue {issue_id} not found: {path}")
         post = frontmatter.load(str(path))
+        blocked_from_raw = post.get("blocked_from")
         return Issue(
             id=post["id"],
             title=post["title"],
@@ -100,6 +101,8 @@ class IssueStore:
             tags=post.get("tags", []),
             assignee=post.get("assignee"),
             sections=self._markdown_to_sections(post.content),
+            blocked_reason=post.get("blocked_reason"),
+            blocked_from=IssueStatus(blocked_from_raw) if blocked_from_raw else None,
         )
 
     def list_all(self) -> list[Issue]:
@@ -202,6 +205,8 @@ class IssueStore:
             updated=datetime.now().isoformat(),
             tags=issue.tags,
             assignee=issue.assignee,
+            blocked_reason=issue.blocked_reason,
+            blocked_from=issue.blocked_from.value if issue.blocked_from else None,
         )
         path = issue_dir / "issue.md"
         path.write_text(frontmatter.dumps(post), encoding="utf-8")

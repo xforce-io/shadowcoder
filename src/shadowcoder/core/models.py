@@ -48,6 +48,15 @@ class InvalidTransitionError(Exception):
         super().__init__(f"Invalid transition: {from_status.value} → {to_status.value}")
 
 
+# --- Blocked reason constants ---
+BLOCKED_BUDGET = "budget_exceeded"
+BLOCKED_MAX_ROUNDS = "max_review_rounds"
+BLOCKED_ACCEPTANCE_WEAK = "acceptance_too_weak"
+BLOCKED_ACCEPTANCE_CONFIRMED = "acceptance_confirmed"
+BLOCKED_ACCEPTANCE_BUG = "acceptance_script_bug"
+BLOCKED_LOW_FEASIBILITY = "low_feasibility"
+
+
 @dataclass
 class Issue:
     id: int
@@ -59,6 +68,8 @@ class Issue:
     tags: list[str] = field(default_factory=list)
     assignee: str | None = None
     sections: dict[str, str] = field(default_factory=dict)
+    blocked_reason: str | None = None
+    blocked_from: IssueStatus | None = None
 
 
 @dataclass

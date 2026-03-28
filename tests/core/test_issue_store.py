@@ -221,3 +221,42 @@ def test_versions_in_subdirectory(store):
     store.create("Test")
     store.save_version(1, "design", 1, "content")
     assert (store.base / "0001" / "versions" / "design_r1.md").exists()
+
+
+def test_blocked_fields_persist(store):
+    """blocked_reason and blocked_from round-trip through save/load."""
+    from shadowcoder.core.models import IssueStatus
+    issue = store.create("test blocked fields")
+    issue.blocked_reason = "acceptance_script_bug"
+    issue.blocked_from = IssueStatus.DEVELOPING
+    store.save(issue)
+
+    loaded = store.get(issue.id)
+    assert loaded.blocked_reason == "acceptance_script_bug"
+    assert loaded.blocked_from == IssueStatus.DEVELOPING
+
+
+def test_blocked_fields_default_none(store):
+    """New issues have None for blocked fields."""
+    issue = store.create("test defaults")
+    loaded = store.get(issue.id)
+    assert loaded.blocked_reason is None
+    assert loaded.blocked_from is None
+
+
+def test_blocked_fields_clear(store):
+    """Setting blocked fields back to None persists correctly."""
+    from shadowcoder.core.models import IssueStatus
+    issue = store.create("test clear")
+    issue.blocked_reason = "budget_exceeded"
+    issue.blocked_from = IssueStatus.DESIGNING
+    store.save(issue)
+
+    issue = store.get(issue.id)
+    issue.blocked_reason = None
+    issue.blocked_from = None
+    store.save(issue)
+
+    loaded = store.get(issue.id)
+    assert loaded.blocked_reason is None
+    assert loaded.blocked_from is None
