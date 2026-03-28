@@ -958,6 +958,63 @@ async def test_acceptance_blame_causes_blocked(bus, config, store, task_mgr, tmp
 
 
 @pytest.mark.asyncio
+async def test_unblock_acceptance_bug_skips_develop(bus, config, store, task_mgr, tmp_repo):
+    """Unblock from acceptance_script_bug skips develop agent, goes straight to acceptance+gate+review."""
+    from shadowcoder.core.models import BLOCKED_ACCEPTANCE_BUG
+    mock_agent = _make_mock_agent(
+        preflight=AsyncMock(return_value=PreflightOutput(
+            feasibility="high", estimated_complexity="low")),
+        develop=AsyncMock(return_value=DevelopOutput(summary="code")),
+        review=AsyncMock(return_value=ReviewOutput(
+            comments=[], reviewer="mock")),
+    )
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=mock_agent)
+    engine = make_engine(bus, store, task_mgr, reg, config, repo_path=str(tmp_repo))
+
+    issue = store.create("Test skip develop")
+    store.update_section(1, "需求", "implement foo")
+    store.update_section(1, "设计", "design foo")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+    store.transition_status(1, IssueStatus.DEVELOPING)
+
+    # Block with acceptance_script_bug
+    issue = store.get(1)
+    issue.blocked_reason = BLOCKED_ACCEPTANCE_BUG
+    issue.blocked_from = IssueStatus.DEVELOPING
+    issue.status = IssueStatus.BLOCKED
+    store.save(issue)
+
+    # Write a fixed acceptance script that passes
+    acc_path = Path(store.base) / "0001" / "acceptance.sh"
+    acc_path.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
+
+    engine._gate_check = AsyncMock(return_value=(True, "ok", ""))
+    engine._get_code_diff = AsyncMock(return_value="diff")
+    # Mock _run_command so acceptance check passes without real bash
+    engine._run_command = AsyncMock(return_value=(True, "all passed"))
+
+    await bus.publish(Message(MessageType.CMD_UNBLOCK, {
+        "issue_id": 1, "message": "fixed acceptance script"}))
+
+    issue = store.get(1)
+    log = store.get_log(1)
+    assert issue.status == IssueStatus.DONE, f"Expected DONE, got {issue.status.value}. Log:\n{log}"
+
+    # Develop agent should NOT have been called (skipped)
+    assert mock_agent.develop.call_count == 0
+
+    # But review should have been called
+    assert mock_agent.review.call_count >= 1
+
+    # Log should mention the skip
+    log = store.get_log(1)
+    assert "跳过 develop agent" in log
+
+
+@pytest.mark.asyncio
 async def test_block_issue_sets_metadata(bus, config, store, task_mgr):
     """_block_issue sets blocked_reason and blocked_from on the issue."""
     from shadowcoder.core.models import BLOCKED_ACCEPTANCE_BUG

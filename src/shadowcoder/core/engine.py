@@ -954,7 +954,7 @@ class Engine:
             event_reason="acceptance tests already pass — criteria too weak")
         return False
 
-    async def _run_develop_cycle(self, issue, task):
+    async def _run_develop_cycle(self, issue, task, skip_first_develop: bool = False):
         """Develop cycle: [acceptance] → develop → [acceptance check] → gate → review → repeat or done."""
         max_rounds = self.config.get_max_review_rounds()
         action_label = "Develop"
@@ -1000,52 +1000,58 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
-                develop_agent_name = self.config.get_agent_for_phase("develop")
-                agent = self.agents.get(develop_agent_name)
-                latest_review = self._get_latest_review(issue.id, review_section_key)
-                ctx_dict = {
-                    "worktree_path": task.worktree_path,
-                    "gate_failure_summary": self._extract_gate_failure_summary(last_gate_output, task.worktree_path) if last_gate_output else "",
-                    "latest_review": latest_review,
-                    "feedback_summary": self._format_feedback_for_agent(
-                        issue.id, round_num=round_num,
-                        has_gate_failure=bool(last_gate_summary)),
-                    "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
-                    "gate_output": last_gate_summary if last_gate_summary else "",
-                }
-                if use_resume:
-                    ctx_dict["resume_id"] = current_session_id
-                else:
-                    ctx_dict["session_id"] = current_session_id
-                request = AgentRequest(action="develop", issue=issue, context=ctx_dict)
-
-                self._dump_agent_context(
-                    issue.id, "develop", round_num, "develop",
-                    develop_agent_name, agent, agent.prepare_develop(request))
-                output = await agent.develop(request)
-                use_resume = True
-                content = output.summary
-                files = output.files_changed
-                feat_summary = f" (files: {', '.join(files)})" if files else ""
-
-                self._track_usage(issue.id, output.usage, phase="develop", round_num=round_num)
-                if output.usage:
+                # Skip develop agent on first round if resuming from acceptance_script_bug
+                if skip_first_develop and round_num == 1:
                     self._log(issue.id,
-                        f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
-                        f"${output.usage.cost_usd or 0:.4f}")
-                if self._check_budget(issue.id):
-                    summary = self._usage_summary(issue.id)
-                    self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
-                    await self._block_issue(issue.id, task, BLOCKED_BUDGET,
-                        from_status=IssueStatus.DEVELOPING,
-                        event_reason=f"budget exceeded: {summary}")
-                    return
+                        f"{action_label} R{round_num} 跳过 develop agent（acceptance script 已修正）")
+                    skip_first_develop = False  # only skip once
+                else:
+                    develop_agent_name = self.config.get_agent_for_phase("develop")
+                    agent = self.agents.get(develop_agent_name)
+                    latest_review = self._get_latest_review(issue.id, review_section_key)
+                    ctx_dict = {
+                        "worktree_path": task.worktree_path,
+                        "gate_failure_summary": self._extract_gate_failure_summary(last_gate_output, task.worktree_path) if last_gate_output else "",
+                        "latest_review": latest_review,
+                        "feedback_summary": self._format_feedback_for_agent(
+                            issue.id, round_num=round_num,
+                            has_gate_failure=bool(last_gate_summary)),
+                        "acceptance_tests": self._format_acceptance_tests_for_developer(issue.id),
+                        "gate_output": last_gate_summary if last_gate_summary else "",
+                    }
+                    if use_resume:
+                        ctx_dict["resume_id"] = current_session_id
+                    else:
+                        ctx_dict["session_id"] = current_session_id
+                    request = AgentRequest(action="develop", issue=issue, context=ctx_dict)
 
-                vfile = self.issue_store.save_version(issue.id, "develop", round_num, content)
-                self.issue_store.update_section(issue.id, section_key, content)
-                self._log(issue.id,
-                    f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
-                    f"内容长度: {len(content)} 字符, 存档: {vfile}")
+                    self._dump_agent_context(
+                        issue.id, "develop", round_num, "develop",
+                        develop_agent_name, agent, agent.prepare_develop(request))
+                    output = await agent.develop(request)
+                    use_resume = True
+                    content = output.summary
+                    files = output.files_changed
+                    feat_summary = f" (files: {', '.join(files)})" if files else ""
+
+                    self._track_usage(issue.id, output.usage, phase="develop", round_num=round_num)
+                    if output.usage:
+                        self._log(issue.id,
+                            f"Usage: {output.usage.input_tokens}+{output.usage.output_tokens} tokens, "
+                            f"${output.usage.cost_usd or 0:.4f}")
+                    if self._check_budget(issue.id):
+                        summary = self._usage_summary(issue.id)
+                        self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
+                        await self._block_issue(issue.id, task, BLOCKED_BUDGET,
+                            from_status=IssueStatus.DEVELOPING,
+                            event_reason=f"budget exceeded: {summary}")
+                        return
+
+                    vfile = self.issue_store.save_version(issue.id, "develop", round_num, content)
+                    self.issue_store.update_section(issue.id, section_key, content)
+                    self._log(issue.id,
+                        f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
+                        f"内容长度: {len(content)} 字符, 存档: {vfile}")
 
                 # Acceptance check (must PASS after develop)
                 acceptance_path = self._acceptance_script_path(issue.id)
@@ -1264,7 +1270,8 @@ class Engine:
         issue = self.issue_store.get(msg.payload["issue_id"])
         task = await self.task_manager.create(issue, repo_path=self.repo_path,
             action="develop", agent_name=self.config.get_agent_for_phase("develop"))
-        await self._run_develop_cycle(issue, task)
+        skip_develop = msg.payload.get("skip_first_develop", False)
+        await self._run_develop_cycle(issue, task, skip_first_develop=skip_develop)
 
     async def _on_run(self, msg):
         """Run the full lifecycle: create (optional) → design → develop → done."""
@@ -1479,7 +1486,13 @@ class Engine:
         issue = self.issue_store.get(issue.id)
         stage = self._infer_blocked_stage(issue)
         if stage == "develop":
-            await self._on_develop(msg)
+            # Skip develop agent call if acceptance script was the problem —
+            # code is likely correct, just re-run acceptance + gate + review
+            develop_msg = Message(msg.type, {
+                **msg.payload,
+                "skip_first_develop": reason == BLOCKED_ACCEPTANCE_BUG,
+            })
+            await self._on_develop(develop_msg)
         elif stage == "design":
             await self._on_design(msg)
 
