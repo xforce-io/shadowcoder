@@ -921,3 +921,30 @@ async def test_acceptance_blame_causes_blocked(bus, config, store, task_mgr, tmp
     # Check log mentions acceptance script
     log = store.get_log(1)
     assert "acceptance script" in log.lower()
+
+
+@pytest.mark.asyncio
+async def test_block_issue_sets_metadata(bus, config, store, task_mgr):
+    """_block_issue sets blocked_reason and blocked_from on the issue."""
+    from shadowcoder.core.models import BLOCKED_ACCEPTANCE_BUG
+    agent = _make_mock_agent()
+    reg = MagicMock()
+    reg.get = MagicMock(return_value=agent)
+    engine = make_engine(bus, store, task_mgr, reg, config)
+
+    issue = store.create("Test block metadata")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+    store.transition_status(1, IssueStatus.DEVELOPING)
+
+    task = MagicMock()
+    task.task_id = "t1"
+    task.status = TaskStatus.RUNNING
+
+    await engine._block_issue(1, task, BLOCKED_ACCEPTANCE_BUG)
+
+    issue = store.get(1)
+    assert issue.status == IssueStatus.BLOCKED
+    assert issue.blocked_reason == BLOCKED_ACCEPTANCE_BUG
+    assert issue.blocked_from == IssueStatus.DEVELOPING

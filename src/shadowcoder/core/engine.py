@@ -13,7 +13,12 @@ from shadowcoder.core.bus import Message, MessageBus, MessageType
 from shadowcoder.core.config import Config
 from shadowcoder.core.issue_store import IssueStore
 from shadowcoder.core.language import detect_language
-from shadowcoder.core.models import Issue, IssueStatus, TaskStatus
+from shadowcoder.core.models import (
+    Issue, IssueStatus, TaskStatus,
+    BLOCKED_BUDGET, BLOCKED_MAX_ROUNDS, BLOCKED_ACCEPTANCE_WEAK,
+    BLOCKED_ACCEPTANCE_CONFIRMED, BLOCKED_ACCEPTANCE_BUG,
+    BLOCKED_LOW_FEASIBILITY,
+)
 from shadowcoder.core.task_manager import TaskManager
 
 logger = logging.getLogger(__name__)
@@ -734,12 +739,9 @@ class Engine:
                 if self._check_budget(issue.id):
                     summary = self._usage_summary(issue.id)
                     self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
-                    self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
-                    self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
-                    task.status = TaskStatus.FAILED
-                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
-                        "issue_id": issue.id, "task_id": task.task_id,
-                        "reason": f"budget exceeded: {summary}"}))
+                    await self._block_issue(issue.id, task, BLOCKED_BUDGET,
+                        from_status=IssueStatus.DESIGNING,
+                        event_reason=f"budget exceeded: {summary}")
                     return
 
                 vfile = self.issue_store.save_version(issue.id, "design", round_num, content)
@@ -793,13 +795,10 @@ class Engine:
                         f"{action_label} Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high})")
                 issue = self.issue_store.get(issue.id)
 
-            self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
             self._log(issue.id,
                 f"{action_label} review 未通过，已重试 {max_rounds} 轮 → BLOCKED")
-            task.status = TaskStatus.FAILED
-            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
-                {"issue_id": issue.id, "task_id": task.task_id,
-                 "reason": f"review not passed after {max_rounds} rounds"}))
+            await self._block_issue(issue.id, task, BLOCKED_MAX_ROUNDS,
+                event_reason=f"review not passed after {max_rounds} rounds")
 
         except AgentActionFailed as e:
             partial = e.partial_output if e.partial_output else ""
@@ -943,10 +942,9 @@ class Engine:
         self._log(issue.id,
             "Pre-gate: acceptance script still PASS after "
             f"{max_attempts} attempts → BLOCKED")
-        self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
-        await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
-            "issue_id": issue.id, "task_id": task.task_id,
-            "reason": "acceptance tests already pass — criteria too weak"}))
+        await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_WEAK,
+            from_status=IssueStatus.APPROVED,
+            event_reason="acceptance tests already pass — criteria too weak")
         return False
 
     async def _run_develop_cycle(self, issue, task):
@@ -970,7 +968,8 @@ class Engine:
             if self.config.get_confirm_acceptance():
                 self._log(issue.id,
                     "Acceptance tests xfail 确认 ✓ → BLOCKED，等待人类确认")
-                self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
+                await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_CONFIRMED,
+                    from_status=IssueStatus.APPROVED)
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": "blocked",
                      "reason": "acceptance_confirmed"}))
@@ -1030,12 +1029,9 @@ class Engine:
                 if self._check_budget(issue.id):
                     summary = self._usage_summary(issue.id)
                     self._log(issue.id, f"预算超限 → BLOCKED\n{summary}")
-                    self.issue_store.transition_status(issue.id, IssueStatus.FAILED)
-                    self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
-                    task.status = TaskStatus.FAILED
-                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
-                        "issue_id": issue.id, "task_id": task.task_id,
-                        "reason": f"budget exceeded: {summary}"}))
+                    await self._block_issue(issue.id, task, BLOCKED_BUDGET,
+                        from_status=IssueStatus.DEVELOPING,
+                        event_reason=f"budget exceeded: {summary}")
                     return
 
                 vfile = self.issue_store.save_version(issue.id, "develop", round_num, content)
@@ -1073,14 +1069,9 @@ class Engine:
                                 if review and self._review_blames_acceptance(review):
                                     self._log(issue.id,
                                         "Reviewer 判定 acceptance script 有误 → BLOCKED，需人类介入修正验收标准")
-                                    self.issue_store.transition_status(
-                                        issue.id, IssueStatus.BLOCKED)
-                                    task.status = TaskStatus.FAILED
-                                    await self.bus.publish(Message(
-                                        MessageType.EVT_TASK_FAILED, {
-                                            "issue_id": issue.id,
-                                            "task_id": task.task_id,
-                                            "reason": "acceptance script may be incorrect — reviewer flagged it"}))
+                                    await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_BUG,
+                                        from_status=IssueStatus.DEVELOPING,
+                                        event_reason="acceptance script may be incorrect — reviewer flagged it")
                                     return
                             last_error_hash = new_hash
                         last_gate_output = acc_output
@@ -1198,13 +1189,10 @@ class Engine:
                         f"Dev Review R{round_num} — RETRY (CRITICAL={critical}, HIGH={high})")
                 issue = self.issue_store.get(issue.id)
 
-            self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
             self._log(issue.id,
                 f"{action_label} review 未通过，已重试 {max_rounds} 轮 → BLOCKED")
-            task.status = TaskStatus.FAILED
-            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED,
-                {"issue_id": issue.id, "task_id": task.task_id,
-                 "reason": f"review not passed after {max_rounds} rounds"}))
+            await self._block_issue(issue.id, task, BLOCKED_MAX_ROUNDS,
+                event_reason=f"review not passed after {max_rounds} rounds")
 
         except AgentActionFailed as e:
             partial = e.partial_output if e.partial_output else ""
@@ -1242,10 +1230,9 @@ class Engine:
 
                 if pf.feasibility == "low":
                     self._log(issue.id, "Preflight: feasibility=low → BLOCKED，等待人类确认")
-                    self.issue_store.transition_status(issue.id, IssueStatus.BLOCKED)
-                    await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
-                        "issue_id": issue.id,
-                        "reason": f"Preflight: low feasibility — {pf_summary}"}))
+                    await self._block_issue(issue.id, None, BLOCKED_LOW_FEASIBILITY,
+                        from_status=IssueStatus.CREATED,
+                        event_reason=f"Preflight: low feasibility — {pf_summary}")
                     return
             except Exception as e:
                 self._log(issue.id, f"Preflight 跳过 (error: {e})")
@@ -1375,6 +1362,25 @@ class Engine:
         if "设计" in issue.sections:
             return "design"
         return None
+
+    async def _block_issue(self, issue_id: int, task, reason: str,
+                           from_status: IssueStatus | None = None,
+                           event_reason: str = "") -> None:
+        """Transition to BLOCKED with structured metadata."""
+        issue = self.issue_store.get(issue_id)
+        if from_status is None:
+            from_status = issue.status
+        issue.blocked_reason = reason
+        issue.blocked_from = from_status
+        issue.status = IssueStatus.BLOCKED
+        self.issue_store.save(issue)
+        if task:
+            task.status = TaskStatus.FAILED
+        if event_reason:
+            await self.bus.publish(Message(MessageType.EVT_TASK_FAILED, {
+                "issue_id": issue_id,
+                "task_id": task.task_id if task else None,
+                "reason": event_reason}))
 
     async def _on_resume(self, msg):
         issue = self.issue_store.get(msg.payload["issue_id"])
