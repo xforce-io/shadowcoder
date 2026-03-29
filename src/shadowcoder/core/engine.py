@@ -988,6 +988,17 @@ class Engine:
             self._last_acceptance_output = exec_output
 
             if not passed:
+                # Distinguish script-self-error from business assertion failure
+                if "command not found" in (exec_output or ""):
+                    self._log(issue.id,
+                        f"Pre-gate: acceptance script 自身损坏 "
+                        f"(attempt {attempt}/{max_attempts}): command not found")
+                    last_failure_feedback = (
+                        f"Your script crashed due to its own error "
+                        f"(not an assertion failure):\n{exec_output}\n\n"
+                        f"Fix the script content."
+                    )
+                    continue
                 self._log(issue.id,
                     f"Pre-gate: acceptance script FAIL (expected) ✓ ({acc_elapsed:.1f}s)")
                 return True
@@ -1025,7 +1036,18 @@ class Engine:
         # --- Acceptance script: write and verify it fails ---
         acceptance_path = self._acceptance_script_path(issue.id)
         if acceptance_path.exists():
-            self._log(issue.id, "Acceptance script 已存在，跳过生成阶段")
+            # Validate existing script isn't corrupted
+            _ok, _out, _ = await self._run_command(
+                f"bash {acceptance_path}", cwd=task.worktree_path)
+            if not _ok and "command not found" in (_out or ""):
+                self._log(issue.id,
+                    "Acceptance script 自身损坏 (command not found)，重新生成")
+                acceptance_path.unlink()
+                acceptance_ok = await self._run_acceptance_phase(issue, task)
+                if not acceptance_ok:
+                    return
+            else:
+                self._log(issue.id, "Acceptance script 已存在，跳过生成阶段")
         else:
             acceptance_ok = await self._run_acceptance_phase(issue, task)
             if not acceptance_ok:
@@ -1118,6 +1140,14 @@ class Engine:
                     acc_passed, acc_output, acc_elapsed = await self._run_command(
                         f"bash {acceptance_path}", cwd=task.worktree_path)
                     if not acc_passed:
+                        # Script-self-error: not a code problem, block immediately
+                        if "command not found" in (acc_output or ""):
+                            self._log(issue.id,
+                                "Acceptance script 自身损坏 (command not found) → BLOCKED")
+                            await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_BUG,
+                                from_status=IssueStatus.DEVELOPING,
+                                event_reason="acceptance script crashed: command not found")
+                            return
                         gate_fail_count += 1
                         self._log(issue.id,
                             f"Acceptance FAIL ({gate_fail_count}, {acc_elapsed:.1f}s): "
