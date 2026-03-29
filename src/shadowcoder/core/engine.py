@@ -567,7 +567,9 @@ class Engine:
 
         # New comments → new FeedbackItems
         existing_ids = {item["id"] for item in items}
-        next_num = max((int(item["id"][1:]) for item in items), default=0) + 1
+        next_num = max(
+            (int(item["id"][1:]) for item in items if item["id"].startswith("F")),
+            default=0) + 1
         for comment in review.comments:
             fid = f"F{next_num}"
             next_num += 1
@@ -609,6 +611,46 @@ class Engine:
         fb["proposed_tests"] = all_tests
 
         fb["items"] = items
+        self.issue_store.save_feedback(issue_id, fb)
+
+    def _update_metric_gate_feedback(self, issue_id: int, round_num: int,
+                                      metrics_str: str, failures: list[str]):
+        """Record metric gate failure as feedback. Replaces previous metric_gate feedback."""
+        fb = self.issue_store.load_feedback(issue_id)
+        items = fb.get("items", [])
+
+        # Remove previous metric gate feedback (replace, not accumulate)
+        items = [item for item in items if item.get("source") != "metric_gate"]
+
+        # Compute next F-number
+        next_num = max(
+            (int(item["id"][1:]) for item in items if item["id"].startswith("F")),
+            default=0) + 1
+
+        items.append({
+            "id": f"F{next_num}",
+            "source": "metric_gate",
+            "category": "high",
+            "description": (
+                f"Metric gate failed at R{round_num}: {'; '.join(failures)}. "
+                f"Metrics were: {metrics_str}. "
+                f"Code was reverted. Try a different approach."
+            ),
+            "round_introduced": round_num,
+            "times_raised": 1,
+            "resolved": False,
+            "escalation_level": 2,
+        })
+        fb["items"] = items
+        self.issue_store.save_feedback(issue_id, fb)
+
+    def _resolve_metric_gate_feedback(self, issue_id: int, round_num: int):
+        """Auto-resolve metric gate feedback when baselines are met."""
+        fb = self.issue_store.load_feedback(issue_id)
+        for item in fb.get("items", []):
+            if item.get("source") == "metric_gate" and not item["resolved"]:
+                item["resolved"] = True
+                item["resolved_round"] = round_num
         self.issue_store.save_feedback(issue_id, fb)
 
     def _format_feedback_for_agent(self, issue_id: int,
