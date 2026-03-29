@@ -172,7 +172,12 @@ async def test_resume_corrupted_acceptance_regenerates(bus, store, task_mgr, con
         return True, "", 0.0
 
     engine._run_command = mock_run_command
-    engine._run_acceptance_phase = AsyncMock(return_value=True)
+
+    # Mock _run_acceptance_phase to write a valid script
+    async def mock_acceptance_phase(issue, task):
+        acceptance_path.write_text("#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+        return True
+    engine._run_acceptance_phase = AsyncMock(side_effect=mock_acceptance_phase)
     engine._gate_check = AsyncMock(return_value=(True, "gate passed", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="")
 

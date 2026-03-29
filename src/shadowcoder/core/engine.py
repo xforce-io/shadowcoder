@@ -1136,6 +1136,12 @@ class Engine:
 
                 # Acceptance check (must PASS after develop)
                 acceptance_path = self._acceptance_script_path(issue.id)
+                if not acceptance_path.exists():
+                    self._log(issue.id,
+                        "Acceptance script 缺失，重新生成")
+                    acceptance_ok = await self._run_acceptance_phase(issue, task)
+                    if not acceptance_ok:
+                        return
                 if acceptance_path.exists():
                     acc_passed, acc_output, acc_elapsed = await self._run_command(
                         f"bash {acceptance_path}", cwd=task.worktree_path)
