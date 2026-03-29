@@ -1052,13 +1052,17 @@ async def test_unblock_acceptance_bug_skips_develop(bus, config, store, task_mgr
     issue.status = IssueStatus.BLOCKED
     store.save(issue)
 
-    # Write a fixed acceptance script that passes
+    # Write a buggy acceptance script (will be deleted on unblock)
     acc_path = Path(store.base) / "0001" / "acceptance.sh"
     acc_path.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
 
+    # _run_acceptance_phase will be called to regenerate; mock it to write a new script
+    async def mock_acceptance_phase(issue, task):
+        acc_path.write_text("#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+        return True
+    engine._run_acceptance_phase = AsyncMock(side_effect=mock_acceptance_phase)
     engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff")
-    # Mock _run_command so acceptance check passes without real bash
     engine._run_command = AsyncMock(return_value=(True, "all passed", 0.0))
 
     await bus.publish(Message(MessageType.CMD_UNBLOCK, {
@@ -1067,6 +1071,9 @@ async def test_unblock_acceptance_bug_skips_develop(bus, config, store, task_mgr
     issue = store.get(1)
     log = store.get_log(1)
     assert issue.status == IssueStatus.DONE, f"Expected DONE, got {issue.status.value}. Log:\n{log}"
+
+    # Old acceptance.sh should have been deleted and regenerated
+    assert engine._run_acceptance_phase.call_count == 1
 
     # Develop agent should NOT have been called (skipped)
     assert mock_agent.develop.call_count == 0
@@ -1136,10 +1143,15 @@ async def test_unblock_restores_develop(bus, config, store, task_mgr, tmp_repo):
     issue.status = IssueStatus.BLOCKED
     store.save(issue)
 
-    # Write acceptance script that passes (so develop can complete)
+    # Write buggy acceptance script (will be deleted on unblock)
     acc_path = Path(store.base) / "0001" / "acceptance.sh"
     acc_path.write_text("#!/bin/bash\nset -euo pipefail\nexit 0\n")
 
+    # Mock acceptance phase to regenerate a valid script
+    async def mock_acceptance_phase(issue, task):
+        acc_path.write_text("#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+        return True
+    engine._run_acceptance_phase = AsyncMock(side_effect=mock_acceptance_phase)
     engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
     engine._get_code_diff = AsyncMock(return_value="diff")
     engine._run_command = AsyncMock(return_value=(True, "", 0.0))

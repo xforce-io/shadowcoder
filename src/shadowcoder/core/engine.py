@@ -1583,8 +1583,12 @@ class Engine:
         issue = self.issue_store.get(issue.id)
         stage = self._infer_blocked_stage(issue)
         if stage == "develop":
-            # Skip develop agent call if acceptance script was the problem —
-            # code is likely correct, just re-run acceptance + gate + review
+            # If acceptance script was the problem, delete it so it gets regenerated
+            if reason == BLOCKED_ACCEPTANCE_BUG:
+                acc_path = self._acceptance_script_path(issue.id)
+                if acc_path.exists():
+                    acc_path.unlink()
+                    self._log(issue.id, "Acceptance script 已删除，将重新生成")
             develop_msg = Message(msg.type, {
                 **msg.payload,
                 "skip_first_develop": reason == BLOCKED_ACCEPTANCE_BUG,
