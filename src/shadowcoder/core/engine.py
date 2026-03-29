@@ -706,6 +706,60 @@ class Engine:
             return f"[第{times}次] {desc}\n    请明确说明修改方向。"
         return desc
 
+    @staticmethod
+    def _read_metrics(worktree_path: str) -> tuple[bool, dict[str, float], str]:
+        """Read metrics.json from worktree root.
+        Returns (ok, metrics_dict, error_message).
+        Rejects non-finite values (NaN, Inf).
+        """
+        import json
+        import math
+        from pathlib import Path
+        metrics_path = Path(worktree_path) / "metrics.json"
+        if not metrics_path.exists():
+            return False, {}, "metrics.json not found in worktree root"
+        try:
+            raw = json.loads(metrics_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError) as e:
+            return False, {}, f"metrics.json parse error: {e}"
+        if not isinstance(raw, dict):
+            return False, {}, f"metrics.json must be a JSON object, got {type(raw).__name__}"
+        metrics = {}
+        for k, v in raw.items():
+            if not isinstance(v, (int, float)):
+                continue
+            fv = float(v)
+            if not math.isfinite(fv):
+                continue
+            metrics[k] = fv
+        return True, metrics, ""
+
+    @staticmethod
+    def _validate_metrics(
+        metrics: dict[str, float],
+        targets: dict[str, str],
+    ) -> tuple[bool, list[str]]:
+        """Validate metrics against configured baseline targets.
+        Returns (all_passed, list_of_failure_descriptions).
+        """
+        import re
+        failures = []
+        for name, spec in targets.items():
+            if name not in metrics:
+                failures.append(f"{name}: MISSING from metrics.json")
+                continue
+            match = re.match(r"(>=|<=|>|<)\s*([\d.eE+-]+)$", spec.strip())
+            if not match:
+                failures.append(f"{name}: invalid target spec '{spec}'")
+                continue
+            op, threshold = match.group(1), float(match.group(2))
+            value = metrics[name]
+            ops = {">=": value >= threshold, "<=": value <= threshold,
+                   ">": value > threshold, "<": value < threshold}
+            if not ops[op]:
+                failures.append(f"{name}: {value:.4f} not {op} {threshold} (baseline)")
+        return len(failures) == 0, failures
+
     async def _run_all_reviewers(self, issue, task, action, review_section_key,
                                   code_diff: str = "", round_num: int = 0):
         reviewer_names = self.config.get_agent_for_phase(f"{action}_review")
