@@ -174,6 +174,14 @@ class Config:
     def get_gate_mode(self) -> str:
         return self._data.get("gate", {}).get("mode", "standard")
 
+    def get_metric_gate(self) -> dict | None:
+        """Return metric gate baseline targets, or None if not configured."""
+        return self._data.get("metric_gate")
+
+    def get_max_metric_retries(self) -> int:
+        """Max metric gate failures before BLOCKED. Default 3."""
+        return self._data.get("review_policy", {}).get("max_metric_retries", 3)
+
     def get_dump_agent_context(self) -> bool:
         return self._data.get("logging", {}).get("dump_agent_context", False)
 
