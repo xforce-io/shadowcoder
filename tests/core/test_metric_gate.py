@@ -110,10 +110,14 @@ class TestMetricValidation:
 
 
 from unittest.mock import AsyncMock, MagicMock
-from shadowcoder.core.bus import MessageBus
+from shadowcoder.core.bus import MessageBus, MessageType, Message
 from shadowcoder.core.issue_store import IssueStore
 from shadowcoder.core.task_manager import TaskManager
 from shadowcoder.core.config import Config
+from shadowcoder.core.models import IssueStatus
+from shadowcoder.agents.types import (
+    AcceptanceOutput, DevelopOutput, ReviewOutput,
+)
 
 
 class TestMetricGateFeedback:
@@ -168,3 +172,199 @@ class TestMetricGateFeedback:
             (int(item["id"][1:]) for item in items if item["id"].startswith("F")),
             default=0) + 1
         assert next_num > 0
+
+
+_STUB_ACCEPTANCE = AcceptanceOutput(
+    script="#!/bin/bash\nset -euo pipefail\ntest -f .dev_done\n")
+
+
+def _make_metric_config(tmp_path, targets, max_retries=3):
+    """Create config with metric_gate section."""
+    targets_yaml = "\n".join(f'  {k}: "{v}"' for k, v in targets.items())
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "clouds:\n  local:\n    env: {}\n"
+        "models:\n  m:\n    cloud: local\n    model: sonnet\n"
+        "agents:\n  a:\n    type: claude_code\n    model: m\n"
+        "dispatch:\n  design: a\n  develop: a\n  design_review: [a]\n  develop_review: [a]\n"
+        f"review_policy:\n  max_review_rounds: 5\n  max_metric_retries: {max_retries}\n"
+        f"  pass_threshold: no_critical\n"
+        f"metric_gate:\n{targets_yaml}\n"
+    )
+    return Config(str(config_path))
+
+
+def _setup_approved(store):
+    store.create("Test")
+    store.transition_status(1, IssueStatus.DESIGNING)
+    store.transition_status(1, IssueStatus.DESIGN_REVIEW)
+    store.transition_status(1, IssueStatus.APPROVED)
+
+
+class TestMetricGateInDevelopLoop:
+    """Integration tests for metric gate check inside _run_develop_cycle."""
+
+    @pytest.fixture
+    def bus(self):
+        return MessageBus()
+
+    @pytest.fixture
+    def wt(self):
+        wt = AsyncMock()
+        wt.ensure = AsyncMock(return_value="/tmp/wt")
+        wt.exists = AsyncMock(return_value=True)
+        wt.cleanup = AsyncMock()
+        wt.save_checkpoint = AsyncMock(return_value="abc123")
+        wt.revert_to = AsyncMock(return_value=True)
+        return wt
+
+    @pytest.fixture
+    def agent(self):
+        a = AsyncMock()
+        a.write_acceptance_script = AsyncMock(return_value=_STUB_ACCEPTANCE)
+        a.develop = AsyncMock(return_value=DevelopOutput(summary="code"))
+        a.review = AsyncMock(return_value=ReviewOutput(comments=[], reviewer="mock"))
+        return a
+
+    async def test_metric_gate_pass(self, bus, wt, agent, tmp_repo, tmp_path):
+        """Metrics meet baselines → proceed to review → DONE."""
+        config = _make_metric_config(tmp_path, {"recall": ">= 0.50"})
+        store = IssueStore(str(tmp_repo), config)
+        _setup_approved(store)
+
+        reg = MagicMock()
+        reg.get = MagicMock(return_value=agent)
+        engine = Engine(bus, store, TaskManager(wt), reg, config, str(tmp_repo))
+        engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
+        engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
+        engine._read_metrics = staticmethod(
+            lambda wp: (True, {"recall": 0.96}, ""))
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+        assert store.get(1).status == IssueStatus.DONE
+
+    async def test_metric_gate_fail_reverts_and_retries(self, bus, wt, agent, tmp_repo, tmp_path):
+        """Metrics below baseline → revert checkpoint → retry."""
+        config = _make_metric_config(tmp_path, {"recall": ">= 0.50"}, max_retries=2)
+        store = IssueStore(str(tmp_repo), config)
+        _setup_approved(store)
+
+        reg = MagicMock()
+        reg.get = MagicMock(return_value=agent)
+        engine = Engine(bus, store, TaskManager(wt), reg, config, str(tmp_repo))
+        engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
+        engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
+
+        call_count = 0
+        def mock_read(wp):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (True, {"recall": 0.05}, "")
+            return (True, {"recall": 0.96}, "")
+
+        engine._read_metrics = staticmethod(mock_read)
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+        assert store.get(1).status == IssueStatus.DONE
+        wt.revert_to.assert_called_once()
+        assert call_count == 2
+
+    async def test_metric_gate_exhausted_blocks(self, bus, wt, agent, tmp_repo, tmp_path):
+        """Metrics fail repeatedly → max retries → BLOCKED."""
+        config = _make_metric_config(tmp_path, {"recall": ">= 0.50"}, max_retries=2)
+        store = IssueStore(str(tmp_repo), config)
+        _setup_approved(store)
+
+        reg = MagicMock()
+        reg.get = MagicMock(return_value=agent)
+        engine = Engine(bus, store, TaskManager(wt), reg, config, str(tmp_repo))
+        engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
+        engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
+        engine._read_metrics = staticmethod(
+            lambda wp: (True, {"recall": 0.05}, ""))
+
+        failed_events = []
+        bus.subscribe(MessageType.EVT_TASK_FAILED, lambda m: failed_events.append(m))
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+        assert store.get(1).status == IssueStatus.BLOCKED
+        assert len(failed_events) >= 1
+        assert "metric gate" in failed_events[-1].payload["reason"]
+
+    async def test_metric_gate_missing_metrics_normal_fail(self, bus, wt, agent, tmp_repo, tmp_path):
+        """Missing metrics.json → treated as normal gate fail, not metric revert."""
+        config = _make_metric_config(tmp_path, {"recall": ">= 0.50"})
+        store = IssueStore(str(tmp_repo), config)
+        _setup_approved(store)
+
+        reg = MagicMock()
+        reg.get = MagicMock(return_value=agent)
+        engine = Engine(bus, store, TaskManager(wt), reg, config, str(tmp_repo))
+        engine._gate_check = AsyncMock(return_value=(True, "ok", "", 0.0))
+        engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
+
+        call_count = 0
+        def mock_read(wp):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (False, {}, "metrics.json not found")
+            return (True, {"recall": 0.96}, "")
+
+        engine._read_metrics = staticmethod(mock_read)
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+        assert store.get(1).status == IssueStatus.DONE
+        # revert_to should NOT be called for missing metrics
+        wt.revert_to.assert_not_called()
+
+    async def test_acceptance_runs_after_review_pass(self, bus, wt, agent, tmp_repo, tmp_path):
+        """Acceptance runs only after review passes, not every round."""
+        config = _make_metric_config(tmp_path, {})  # no metric gate
+        store = IssueStore(str(tmp_repo), config)
+        _setup_approved(store)
+
+        reg = MagicMock()
+        reg.get = MagicMock(return_value=agent)
+        engine = Engine(bus, store, TaskManager(wt), reg, config, str(tmp_repo))
+
+        gate_calls = 0
+        async def gate_side(*args, **kw):
+            nonlocal gate_calls
+            gate_calls += 1
+            if gate_calls == 1:
+                return False, "fail", "err", 0.0
+            return True, "ok", "", 0.0
+        engine._gate_check = AsyncMock(side_effect=gate_side)
+        engine._get_code_diff = AsyncMock(return_value="")
+        engine._run_acceptance_phase = AsyncMock(return_value=True)
+
+        # Acceptance script exists on disk
+        acc_path = engine._acceptance_script_path(1)
+        acc_path.parent.mkdir(parents=True, exist_ok=True)
+        acc_path.write_text("#!/bin/bash\ntest -f ok\n")
+
+        run_cmd_calls = []
+        async def mock_run_cmd(cmd, cwd=None, **kw):
+            run_cmd_calls.append(cmd)
+            if "acceptance" in cmd:
+                return True, "", 0.0
+            return True, "", 0.0
+        engine._run_command = mock_run_cmd
+
+        await bus.publish(Message(MessageType.CMD_DEVELOP, {"issue_id": 1}))
+
+        assert store.get(1).status == IssueStatus.DONE
+        # Acceptance runs: 1 pre-loop validation + 1 post-review check
+        # (NOT once per develop round)
+        acc_cmds = [c for c in run_cmd_calls if "acceptance" in c]
+        assert len(acc_cmds) == 2  # pre-loop validation + post-review

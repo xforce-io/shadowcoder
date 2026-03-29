@@ -18,7 +18,7 @@ from shadowcoder.core.models import (
     Issue, IssueStatus, TaskStatus,
     BLOCKED_BUDGET, BLOCKED_MAX_ROUNDS, BLOCKED_ACCEPTANCE_WEAK,
     BLOCKED_ACCEPTANCE_CONFIRMED, BLOCKED_ACCEPTANCE_BUG,
-    BLOCKED_LOW_FEASIBILITY,
+    BLOCKED_LOW_FEASIBILITY, BLOCKED_METRIC_GATE,
 )
 from shadowcoder.core.task_manager import TaskManager
 
@@ -1121,7 +1121,7 @@ class Engine:
         return False
 
     async def _run_develop_cycle(self, issue, task, skip_first_develop: bool = False):
-        """Develop cycle: [acceptance] → develop → [acceptance check] → gate → review → repeat or done."""
+        """Develop cycle: [acceptance] → develop → gate → metric gate → review → acceptance → done."""
         max_rounds = self.config.get_max_review_rounds()
         action_label = "Develop"
         section_key = "开发步骤"
@@ -1167,6 +1167,9 @@ class Engine:
             last_error_hash = ""
             current_session_id = str(uuid.uuid4())
             use_resume = False
+            metric_gate_retries = 0
+            max_metric_retries = self.config.get_max_metric_retries()
+            metric_gate_targets = self.config.get_metric_gate()
 
             for round_num in range(1, max_rounds + 1):
                 issue = self.issue_store.get(issue.id)
@@ -1176,6 +1179,11 @@ class Engine:
                 self._log(issue.id, f"{action_label} R{round_num} 开始")
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
+
+                # Save checkpoint for potential metric gate revert
+                wt_manager = self.task_manager.worktree_manager
+                checkpoint = await wt_manager.save_checkpoint(
+                    task.worktree_path, f"pre-develop-R{round_num}")
 
                 # Skip develop agent on first round if resuming from acceptance_script_bug
                 if skip_first_develop and round_num == 1:
@@ -1230,59 +1238,6 @@ class Engine:
                         f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
                         f"内容长度: {len(content)} 字符, 存档: {vfile}")
 
-                # Acceptance check (must PASS after develop)
-                acceptance_path = self._acceptance_script_path(issue.id)
-                if not acceptance_path.exists():
-                    self._log(issue.id,
-                        "Acceptance script 缺失，重新生成")
-                    acceptance_ok = await self._run_acceptance_phase(issue, task)
-                    if not acceptance_ok:
-                        return
-                if acceptance_path.exists():
-                    acc_passed, acc_output, acc_elapsed = await self._run_command(
-                        f"bash {acceptance_path}", cwd=task.worktree_path)
-                    if not acc_passed:
-                        # Script-self-error: not a code problem, block immediately
-                        if "command not found" in (acc_output or ""):
-                            self._log(issue.id,
-                                "Acceptance script 自身损坏 (command not found) → BLOCKED")
-                            await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_BUG,
-                                from_status=IssueStatus.DEVELOPING,
-                                event_reason="acceptance script crashed: command not found")
-                            return
-                        gate_fail_count += 1
-                        self._log(issue.id,
-                            f"Acceptance FAIL ({gate_fail_count}, {acc_elapsed:.1f}s): "
-                            f"验收断言未通过，问题尚未解决")
-                        if acc_output:
-                            acc_summary = await self._extract_error_summary(
-                                acc_output, issue_id=issue.id)
-                            last_gate_summary = acc_summary
-                            self._log(issue.id,
-                                f"Acceptance output (extracted):\n{acc_summary}")
-                            new_hash = self._error_hash(last_gate_summary)
-                            if new_hash and new_hash == last_error_hash:
-                                self._log(issue.id,
-                                    "Same error detected in consecutive rounds — "
-                                    "forcing root cause analysis via reviewer")
-                                self._log(issue.id,
-                                    "Acceptance 连续失败，升级给 reviewer 分析")
-                                review = await self._escalate_to_reviewer(
-                                    issue, task, round_num,
-                                    acc_output, last_gate_summary)
-                                if review and self._review_blames_acceptance(review):
-                                    self._log(issue.id,
-                                        "Reviewer 判定 acceptance script 有误 → BLOCKED，需人类介入修正验收标准")
-                                    await self._block_issue(issue.id, task, BLOCKED_ACCEPTANCE_BUG,
-                                        from_status=IssueStatus.DEVELOPING,
-                                        event_reason="acceptance script may be incorrect — reviewer flagged it")
-                                    return
-                            last_error_hash = new_hash
-                        last_gate_output = acc_output
-                        issue = self.issue_store.get(issue.id)
-                        continue  # retry develop
-                    self._log(issue.id, f"Acceptance PASS ✓ ({acc_elapsed:.1f}s)")
-
                 # Gate (symbolic)
                 gate_ok, gate_msg, gate_output, gate_elapsed = await self._gate_check(
                     issue.id, task.worktree_path, proposed_tests)
@@ -1325,6 +1280,63 @@ class Engine:
                 gate_fail_count = 0  # reset on gate pass
                 last_gate_output = ""
 
+                # Metric gate: check baselines if configured
+                if metric_gate_targets:
+                    mg_ok, mg_metrics, mg_err = self._read_metrics(task.worktree_path)
+                    if not mg_ok:
+                        # metrics.json missing/invalid — normal gate fail (code incomplete)
+                        gate_fail_count += 1
+                        last_gate_summary = f"metrics.json: {mg_err}"
+                        self._log(issue.id,
+                            f"Metric gate: {mg_err} — treating as normal gate failure")
+                        last_gate_output = mg_err
+                        issue = self.issue_store.get(issue.id)
+                        continue
+                    mg_valid, mg_failures = self._validate_metrics(
+                        mg_metrics, metric_gate_targets)
+                    if not mg_valid:
+                        metric_gate_retries += 1
+                        metrics_str = ", ".join(
+                            f"{k}={v:.4f}" for k, v in mg_metrics.items())
+                        self._log(issue.id,
+                            f"Metric gate FAIL ({metric_gate_retries}/{max_metric_retries}): "
+                            f"{'; '.join(mg_failures)}")
+                        if metric_gate_retries >= max_metric_retries:
+                            self._log(issue.id,
+                                "Metric gate: max retries reached → BLOCKED")
+                            await self._block_issue(
+                                issue.id, task, BLOCKED_METRIC_GATE,
+                                from_status=IssueStatus.DEVELOPING,
+                                event_reason=f"metric gate failed {max_metric_retries} times")
+                            return
+                        # Revert code to checkpoint
+                        revert_ok = await wt_manager.revert_to(
+                            task.worktree_path, checkpoint)
+                        if not revert_ok:
+                            self._log(issue.id,
+                                "Metric gate: code revert failed → BLOCKED")
+                            await self._block_issue(
+                                issue.id, task, BLOCKED_METRIC_GATE,
+                                from_status=IssueStatus.DEVELOPING,
+                                event_reason="git revert failed after metric gate failure")
+                            return
+                        self._log(issue.id,
+                            f"Metric gate: code reverted to pre-R{round_num}")
+                        self._update_metric_gate_feedback(
+                            issue.id, round_num, metrics_str, mg_failures)
+                        last_gate_summary = f"Metric gate failed: {'; '.join(mg_failures)}"
+                        last_gate_output = f"Metrics: {metrics_str}"
+                        # Reset session — agent must try different approach
+                        current_session_id = str(uuid.uuid4())
+                        use_resume = False
+                        issue = self.issue_store.get(issue.id)
+                        continue
+                    # Metric gate passed
+                    self._resolve_metric_gate_feedback(issue.id, round_num)
+                    self._log(issue.id,
+                        f"Metric gate PASS "
+                        f"({', '.join(f'{k}={v:.4f}' for k, v in mg_metrics.items())})")
+
                 # Review (neural, based on git diff)
                 self.issue_store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
                 issue = self.issue_store.get(issue.id)
@@ -1345,36 +1357,63 @@ class Engine:
 
                 decision = self._review_decision(last_review) if last_review else "retry"
 
+                # Determine if review accepted
+                should_accept = False
                 if decision == "pass":
+                    should_accept = True
+                elif decision == "conditional_pass":
+                    threshold = self.config.get_pass_threshold()
+                    if threshold != "no_high_or_critical" or conditional_pass_count > 0:
+                        should_accept = True
+                    else:
+                        conditional_pass_count += 1
+                        self._log(issue.id,
+                            f"Dev Review R{round_num} — CONDITIONAL_PASS → fix HIGH issues")
+
+                if should_accept:
+                    # Run acceptance as final gate before DONE
+                    acceptance_path = self._acceptance_script_path(issue.id)
+                    if acceptance_path.exists():
+                        acc_passed, acc_output, acc_elapsed = await self._run_command(
+                            f"bash {acceptance_path}", cwd=task.worktree_path)
+                        if not acc_passed:
+                            self._log(issue.id,
+                                f"Acceptance FAIL after review pass ({acc_elapsed:.1f}s)")
+                            if acc_output:
+                                acc_summary = await self._extract_error_summary(
+                                    acc_output, issue_id=issue.id)
+                                last_gate_summary = acc_summary
+                                last_gate_output = acc_output
+                                self._log(issue.id,
+                                    f"Acceptance output:\n{acc_summary}")
+                            # Reset session and feedback
+                            current_session_id = str(uuid.uuid4())
+                            use_resume = False
+                            fb = self.issue_store.load_feedback(issue.id)
+                            for item in fb.get("items", []):
+                                if item.get("resolved"):
+                                    item["resolved"] = False
+                                    item.pop("resolved_round", None)
+                            self.issue_store.save_feedback(issue.id, fb)
+                            issue = self.issue_store.get(issue.id)
+                            continue  # back to develop loop
+
+                        self._log(issue.id, f"Acceptance PASS ({acc_elapsed:.1f}s)")
+
+                    # All gates passed — DONE
+                    suffix = ""
+                    if decision == "conditional_pass":
+                        suffix = " (2nd)" if conditional_pass_count > 0 else ""
                     self.issue_store.transition_status(issue.id, IssueStatus.DONE)
                     self._log(issue.id,
-                        f"Dev Review R{round_num} — PASS → done")
+                        f"Dev Review R{round_num} — {decision.upper()}{suffix} → done")
                     self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
-                    self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
+                    self._log(issue.id,
+                        "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
                     task.status = TaskStatus.COMPLETED
                     await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
                         {"issue_id": issue.id, "task_id": task.task_id}))
                     return
-
-                if decision == "conditional_pass":
-                    threshold = self.config.get_pass_threshold()
-                    if threshold != "no_high_or_critical" or conditional_pass_count > 0:
-                        # Lenient mode: accept immediately.
-                        # Strict mode, second conditional_pass: accept to avoid loop.
-                        suffix = " (2nd)" if conditional_pass_count > 0 else ""
-                        self.issue_store.transition_status(issue.id, IssueStatus.DONE)
-                        self._log(issue.id,
-                            f"Dev Review R{round_num} — CONDITIONAL_PASS{suffix} → done")
-                        self._log(issue.id, f"=== 总计 ===\n{self._usage_summary(issue.id)}")
-                        self._log(issue.id, "提示: 可以用 `merge #id` 合并分支，或 `cleanup #id` 清理 worktree")
-                        task.status = TaskStatus.COMPLETED
-                        await self.bus.publish(Message(MessageType.EVT_TASK_COMPLETED,
-                            {"issue_id": issue.id, "task_id": task.task_id}))
-                        return
-                    # Strict mode, first conditional_pass: fix HIGH issues
-                    conditional_pass_count += 1
-                    self._log(issue.id,
-                        f"Dev Review R{round_num} — CONDITIONAL_PASS → 再修一轮 HIGH issues")
 
                 # retry — fresh session for next develop (review feedback may change direction)
                 current_session_id = str(uuid.uuid4())

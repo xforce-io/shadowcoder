@@ -971,18 +971,19 @@ def test_review_blames_acceptance_detects_marker():
 
 @pytest.mark.asyncio
 async def test_acceptance_blame_causes_blocked(bus, config, store, task_mgr, tmp_repo):
-    """Reviewer blames acceptance script → issue transitions to BLOCKED."""
+    """Acceptance always fails after review pass → exhausts max rounds → BLOCKED.
+
+    With the restructured flow, acceptance only runs after review passes.
+    When acceptance persistently fails, the loop retries until max_rounds
+    and then blocks with max_rounds reason.
+    """
     mock_agent = _make_mock_agent(
         preflight=AsyncMock(return_value=PreflightOutput(
             feasibility="high", estimated_complexity="low")),
         develop=AsyncMock(return_value=DevelopOutput(summary="code")),
-        # Reviewer returns comment with acceptance_script target
+        # Reviewer returns pass (no issues) so acceptance check is reached
         review=AsyncMock(return_value=ReviewOutput(
-            comments=[ReviewComment(
-                severity=Severity.HIGH,
-                message="[TARGET:acceptance_script] '1 - - 2' is a valid expression, "
-                        "acceptance script wrongly expects ValueError")],
-            reviewer="mock")),
+            comments=[], reviewer="mock")),
     )
     registry = MagicMock()
     registry.get = MagicMock(return_value=mock_agent)
@@ -1015,11 +1016,11 @@ async def test_acceptance_blame_causes_blocked(bus, config, store, task_mgr, tmp
     issue = store.get(1)
     assert issue.status == IssueStatus.BLOCKED
     assert len(failed_events) >= 1
-    assert "acceptance script" in failed_events[-1].payload["reason"]
+    assert "review not passed" in failed_events[-1].payload["reason"]
 
-    # Check log mentions acceptance script
+    # Check log mentions acceptance failure
     log = store.get_log(1)
-    assert "acceptance script" in log.lower()
+    assert "acceptance fail" in log.lower()
 
 
 @pytest.mark.asyncio
