@@ -111,3 +111,34 @@ class WorktreeManager:
             for line in output.splitlines()
             if line.startswith("worktree ")
         ]
+
+    async def save_checkpoint(self, worktree_path: str, label: str) -> str:
+        """Commit current state as a checkpoint. Returns commit hash.
+
+        Deletes metrics.json first (freshness guarantee), then stages
+        all changes and creates a checkpoint commit.
+        """
+        metrics = Path(worktree_path) / "metrics.json"
+        if metrics.exists():
+            metrics.unlink()
+
+        await self._run_git(worktree_path, "add", "-A")
+        await self._run_git(
+            worktree_path, "commit", "--allow-empty",
+            "-m", f"checkpoint: {label}")
+        head = await self._run_git(worktree_path, "rev-parse", "HEAD")
+        return head.strip()
+
+    async def revert_to(self, worktree_path: str, checkpoint: str) -> bool:
+        """Hard reset to checkpoint. Returns True on success."""
+        try:
+            await self._run_git(worktree_path, "reset", "--hard", checkpoint)
+            await self._run_git(worktree_path, "clean", "-fd")
+            return True
+        except RuntimeError:
+            return False
+
+    async def current_head(self, worktree_path: str) -> str:
+        """Return current HEAD commit hash."""
+        head = await self._run_git(worktree_path, "rev-parse", "HEAD")
+        return head.strip()
