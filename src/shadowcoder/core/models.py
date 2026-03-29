@@ -55,6 +55,7 @@ BLOCKED_ACCEPTANCE_WEAK = "acceptance_too_weak"
 BLOCKED_ACCEPTANCE_CONFIRMED = "acceptance_confirmed"
 BLOCKED_ACCEPTANCE_BUG = "acceptance_script_bug"
 BLOCKED_LOW_FEASIBILITY = "low_feasibility"
+BLOCKED_METRIC_GATE = "metric_gate_exhausted"
 
 
 @dataclass
