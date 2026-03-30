@@ -91,3 +91,53 @@ class TestMetricsHistory:
         assert store.get_last_metrics(1) == {"recall": 0.5}
         store.save_metrics_entry(1, 2, {"recall": 0.8})
         assert store.get_last_metrics(1) == {"recall": 0.8}
+
+
+class TestParetoComparison:
+    def test_improvement_one_better(self):
+        ok = Engine._is_pareto_improvement(
+            current={"recall": 0.80, "precision": 0.73},
+            previous={"recall": 0.79, "precision": 0.73},
+            targets={"recall": ">= 0.90", "precision": ">= 0.50"},
+            threshold=0.01)
+        assert ok is True
+
+    def test_no_change_is_stagnation(self):
+        ok = Engine._is_pareto_improvement(
+            current={"recall": 0.79, "precision": 0.73},
+            previous={"recall": 0.79, "precision": 0.73},
+            targets={"recall": ">= 0.90", "precision": ">= 0.50"},
+            threshold=0.01)
+        assert ok is False
+
+    def test_one_worse_is_not_pareto(self):
+        ok = Engine._is_pareto_improvement(
+            current={"recall": 0.80, "precision": 0.71},
+            previous={"recall": 0.79, "precision": 0.73},
+            targets={"recall": ">= 0.90", "precision": ">= 0.50"},
+            threshold=0.01)
+        assert ok is False
+
+    def test_tiny_improvement_below_threshold(self):
+        ok = Engine._is_pareto_improvement(
+            current={"recall": 0.791, "precision": 0.73},
+            previous={"recall": 0.79, "precision": 0.73},
+            targets={"recall": ">= 0.90", "precision": ">= 0.50"},
+            threshold=0.01)
+        assert ok is False
+
+    def test_first_round_no_previous(self):
+        ok = Engine._is_pareto_improvement(
+            current={"recall": 0.50, "precision": 0.30},
+            previous=None,
+            targets={"recall": ">= 0.90", "precision": ">= 0.50"},
+            threshold=0.01)
+        assert ok is True
+
+    def test_only_target_metrics_compared(self):
+        ok = Engine._is_pareto_improvement(
+            current={"recall": 0.80, "precision": 0.73, "f1": 0.50},
+            previous={"recall": 0.79, "precision": 0.73},
+            targets={"recall": ">= 0.90", "precision": ">= 0.50"},
+            threshold=0.01)
+        assert ok is True

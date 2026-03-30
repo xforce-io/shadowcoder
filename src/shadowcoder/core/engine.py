@@ -802,6 +802,35 @@ class Engine:
                 failures.append(f"{name}: {value:.4f} not {op} {threshold} (baseline)")
         return len(failures) == 0, failures
 
+    @staticmethod
+    def _is_pareto_improvement(
+        current: dict[str, float],
+        previous: dict[str, float] | None,
+        targets: dict[str, str],
+        threshold: float = 0.01,
+    ) -> bool:
+        """Check if current metrics are a Pareto improvement over previous.
+
+        Pareto improvement: no target metric got worse AND at least one improved
+        by more than threshold. First round (previous=None) always counts.
+        Only metrics named in targets are compared.
+        """
+        if previous is None:
+            return True
+        target_names = list(targets.keys())
+        any_improved = False
+        for name in target_names:
+            curr_val = current.get(name)
+            prev_val = previous.get(name)
+            if curr_val is None or prev_val is None:
+                continue
+            delta = curr_val - prev_val
+            if delta < -threshold:
+                return False
+            if delta > threshold:
+                any_improved = True
+        return any_improved
+
     async def _run_all_reviewers(self, issue, task, action, review_section_key,
                                   code_diff: str = "", round_num: int = 0):
         reviewer_names = self.config.get_agent_for_phase(f"{action}_review")
