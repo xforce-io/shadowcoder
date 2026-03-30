@@ -84,10 +84,12 @@ python scripts/run_real.py ~/dev/github/<name> cleanup 1 --delete-branch
 
 ```
 Engine._run_design_cycle:  [preflight] → design → review → retry or approved
-Engine._run_develop_cycle: [acceptance] → develop → gate → review → retry or done
-                                            ↑        │
-                                            └────────┘  (gate fail → retry develop)
-                                            (2 consecutive fails → escalate to reviewer)
+Engine._run_develop_cycle: develop → gate → review → [pass] → acceptance → DONE
+                              ↑        │               │
+                              └────────┘               └── acceptance fail → reset session → develop
+                         (gate fail → retry develop)
+                         (2 consecutive gate fails → escalate to reviewer)
+                         (metric gate fail → revert to checkpoint → retry develop)
 
 States: CREATED → DESIGNING ⇄ DESIGN_REVIEW → APPROVED → DEVELOPING ⇄ DEV_REVIEW → DONE
         Any state → BLOCKED (human intervention) / FAILED / CANCELLED
@@ -102,12 +104,13 @@ Key files:
 - `src/shadowcoder/core/issue_store.py` — issue state, logs, version archives
 - `src/shadowcoder/core/config.py` — typed config access
 - `src/shadowcoder/core/language.py` — language detection and test profiles
+- `src/shadowcoder/core/worktree.py` — worktree management, checkpoints, revert
 - `src/shadowcoder/agents/types.py` — AgentRequest, ReviewOutput, AcceptanceOutput, etc.
 - `data/roles/` — default role prompts (soul.md + instructions.md per role)
 
 ## Multi-Model Support
 
-Config is structured in sections: `clouds`, `models`, `agents`, `dispatch`, `review_policy`, and optional `build`/`gate`.
+Config is structured in sections: `clouds`, `models`, `agents`, `dispatch`, `review_policy`, and optional `build`/`gate`/`metric_gate`.
 
 ```yaml
 # ~/.shadowcoder/config.yaml
@@ -149,25 +152,44 @@ review_policy:
   pass_threshold: no_critical    # or "no_high_or_critical"
   max_review_rounds: 3
   max_test_retries: 3
+  max_metric_retries: 3          # optional, default 3
   # max_budget_usd: 10.0
 
 # build:
 #   test_command: "cargo test 2>&1"  # auto-detected if omitted
+
+# metric_gate:                   # optional; enable metric-based gate checks
+#   recall: ">= 0.50"
+#   precision: ">= 0.20"
 ```
 
 Mix agents freely: one for develop, another for review. Agent types: `claude_code` and `codex`.
 
 ## Gate Behavior
 
+The gate has two failure modes with different recovery strategies:
+
+**pytest / test suite failure** (preserve code, continue fixing):
 - Runs `cargo test` / `pytest` / `go test` / `npm test` (auto-detected via `language.py` or config `build.test_command`)
-- Runs acceptance script (`NNNN/acceptance.sh`) — must pass after develop
 - Verifies each acceptance test in `proposed_tests` was executed and passed
 - Skipped/ignored tests are detected and reported as gate failure
 - Falls back to running individual tests with force-include flags if heuristic is ambiguous
 - Gate output uses head+tail truncation (not blind tail-only) to preserve compile errors
 - 2 consecutive gate failures escalate to code reviewer for analysis
-- Gate/acceptance failure output is processed by utility agent (LLM) to extract root-cause errors
+- Gate failure output is processed by utility agent (LLM) to extract root-cause errors
 - Same error detected in consecutive rounds triggers forced reviewer escalation
+
+**Metric gate failure** (revert code, retry with different approach):
+- After pytest passes, reads `metrics.json` from the worktree root
+- Compares each metric against thresholds configured in `metric_gate` (e.g. `recall: ">= 0.50"`)
+- Below baseline → revert worktree to the pre-develop checkpoint, reset session, retry develop
+- Missing `metrics.json` → treated as normal gate failure (no revert)
+- `max_metric_retries` exhausted → BLOCKED with `metric_gate_exhausted`
+- Checkpoint is saved (and `metrics.json` deleted for freshness) before each develop round
+
+**Acceptance** (final verification, runs after review passes):
+- Acceptance script (`NNNN/acceptance.sh`) runs once as the final step before DONE
+- Acceptance fail → reset session + reset resolved feedback → back to develop
 
 ## Conventions
 
