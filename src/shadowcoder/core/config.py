@@ -175,12 +175,25 @@ class Config:
         return self._data.get("gate", {}).get("mode", "standard")
 
     def get_metric_gate(self) -> dict | None:
-        """Return metric gate baseline targets, or None if not configured."""
+        """Return full metric_gate config, or None if not configured."""
         return self._data.get("metric_gate")
 
-    def get_max_metric_retries(self) -> int:
-        """Max metric gate failures before BLOCKED. Default 3."""
-        return self._data.get("review_policy", {}).get("max_metric_retries", 3)
+    def get_metric_targets(self) -> dict | None:
+        """Return metric targets dict, or None if not configured."""
+        mg = self._data.get("metric_gate")
+        if not mg:
+            return None
+        return mg.get("targets")
+
+    def get_max_stagnant_rounds(self) -> int:
+        """Max consecutive non-Pareto rounds before BLOCKED. Default 2."""
+        mg = self._data.get("metric_gate", {})
+        return mg.get("max_stagnant_rounds", 2)
+
+    def get_improvement_threshold(self) -> float:
+        """Minimum delta to count as improvement. Default 0.01 (1%)."""
+        mg = self._data.get("metric_gate", {})
+        return mg.get("improvement_threshold", 0.01)
 
     def get_dump_agent_context(self) -> bool:
         return self._data.get("logging", {}).get("dump_agent_context", False)

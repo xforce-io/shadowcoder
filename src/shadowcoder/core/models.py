@@ -56,6 +56,7 @@ BLOCKED_ACCEPTANCE_CONFIRMED = "acceptance_confirmed"
 BLOCKED_ACCEPTANCE_BUG = "acceptance_script_bug"
 BLOCKED_LOW_FEASIBILITY = "low_feasibility"
 BLOCKED_METRIC_STAGNATED = "metric_stagnated"
+BLOCKED_METRIC_GATE = BLOCKED_METRIC_STAGNATED  # alias for engine compatibility
 
 
 @dataclass
