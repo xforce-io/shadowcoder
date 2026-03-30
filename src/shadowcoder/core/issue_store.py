@@ -54,6 +54,31 @@ class IssueStore:
         import json
         path.write_text(json.dumps(feedback, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def _metrics_history_path(self, issue_id: int) -> Path:
+        return self._issue_dir(issue_id) / "metrics_history.json"
+
+    def load_metrics_history(self, issue_id: int) -> dict:
+        path = self._metrics_history_path(issue_id)
+        if not path.exists():
+            return {"rounds": []}
+        import json
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_metrics_entry(self, issue_id: int, round_num: int, metrics: dict) -> None:
+        history = self.load_metrics_history(issue_id)
+        history["rounds"].append({"round": round_num, "metrics": metrics})
+        path = self._metrics_history_path(issue_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json
+        path.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def get_last_metrics(self, issue_id: int) -> dict | None:
+        history = self.load_metrics_history(issue_id)
+        rounds = history.get("rounds", [])
+        if not rounds:
+            return None
+        return rounds[-1]["metrics"]
+
     def _versions_dir(self, issue_id: int) -> Path:
         return self._issue_dir(issue_id) / "versions"
 
