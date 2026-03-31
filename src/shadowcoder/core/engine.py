@@ -1170,6 +1170,12 @@ class Engine:
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
 
+                # Delete stale metrics.json before develop (freshness guarantee)
+                if metric_targets:
+                    stale_metrics = Path(task.worktree_path) / "metrics.json"
+                    if stale_metrics.exists():
+                        stale_metrics.unlink()
+
                 # Skip develop agent on first round if resuming from acceptance_script_bug
                 if skip_first_develop and round_num == 1:
                     self._log(issue.id,
