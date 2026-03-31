@@ -18,7 +18,7 @@ from shadowcoder.core.models import (
     Issue, IssueStatus, TaskStatus,
     BLOCKED_BUDGET, BLOCKED_MAX_ROUNDS, BLOCKED_ACCEPTANCE_WEAK,
     BLOCKED_ACCEPTANCE_CONFIRMED, BLOCKED_ACCEPTANCE_BUG,
-    BLOCKED_LOW_FEASIBILITY, BLOCKED_METRIC_GATE,
+    BLOCKED_LOW_FEASIBILITY, BLOCKED_METRIC_STAGNATED,
 )
 from shadowcoder.core.task_manager import TaskManager
 
@@ -613,46 +613,6 @@ class Engine:
         fb["items"] = items
         self.issue_store.save_feedback(issue_id, fb)
 
-    def _update_metric_gate_feedback(self, issue_id: int, round_num: int,
-                                      metrics_str: str, failures: list[str]):
-        """Record metric gate failure as feedback. Replaces previous metric_gate feedback."""
-        fb = self.issue_store.load_feedback(issue_id)
-        items = fb.get("items", [])
-
-        # Remove previous metric gate feedback (replace, not accumulate)
-        items = [item for item in items if item.get("source") != "metric_gate"]
-
-        # Compute next F-number
-        next_num = max(
-            (int(item["id"][1:]) for item in items if item["id"].startswith("F")),
-            default=0) + 1
-
-        items.append({
-            "id": f"F{next_num}",
-            "source": "metric_gate",
-            "category": "high",
-            "description": (
-                f"Metric gate failed at R{round_num}: {'; '.join(failures)}. "
-                f"Metrics were: {metrics_str}. "
-                f"Code was reverted. Try a different approach."
-            ),
-            "round_introduced": round_num,
-            "times_raised": 1,
-            "resolved": False,
-            "escalation_level": 2,
-        })
-        fb["items"] = items
-        self.issue_store.save_feedback(issue_id, fb)
-
-    def _resolve_metric_gate_feedback(self, issue_id: int, round_num: int):
-        """Auto-resolve metric gate feedback when baselines are met."""
-        fb = self.issue_store.load_feedback(issue_id)
-        for item in fb.get("items", []):
-            if item.get("source") == "metric_gate" and not item["resolved"]:
-                item["resolved"] = True
-                item["resolved_round"] = round_num
-        self.issue_store.save_feedback(issue_id, fb)
-
     def _format_feedback_for_agent(self, issue_id: int,
                                     round_num: int = 0,
                                     has_gate_failure: bool = False) -> str:
@@ -1196,9 +1156,10 @@ class Engine:
             last_error_hash = ""
             current_session_id = str(uuid.uuid4())
             use_resume = False
-            metric_gate_retries = 0
-            max_metric_retries = self.config.get_max_metric_retries()
-            metric_gate_targets = self.config.get_metric_gate()
+            metric_targets = self.config.get_metric_targets()
+            stagnant_count = 0
+            max_stagnant = self.config.get_max_stagnant_rounds()
+            improvement_threshold = self.config.get_improvement_threshold()
 
             for round_num in range(1, max_rounds + 1):
                 issue = self.issue_store.get(issue.id)
@@ -1208,11 +1169,6 @@ class Engine:
                 self._log(issue.id, f"{action_label} R{round_num} 开始")
                 await self.bus.publish(Message(MessageType.EVT_STATUS_CHANGED,
                     {"issue_id": issue.id, "status": issue.status.value, "round": round_num}))
-
-                # Save checkpoint for potential metric gate revert
-                wt_manager = self.task_manager.worktree_manager
-                checkpoint = await wt_manager.save_checkpoint(
-                    task.worktree_path, f"pre-develop-R{round_num}")
 
                 # Skip develop agent on first round if resuming from acceptance_script_bug
                 if skip_first_develop and round_num == 1:
@@ -1309,11 +1265,11 @@ class Engine:
                 gate_fail_count = 0  # reset on gate pass
                 last_gate_output = ""
 
-                # Metric gate: check baselines if configured
-                if metric_gate_targets:
+                # Metric gate: Pareto improvement detection
+                if metric_targets:
                     mg_ok, mg_metrics, mg_err = self._read_metrics(task.worktree_path)
                     if not mg_ok:
-                        # metrics.json missing/invalid — normal gate fail (code incomplete)
+                        # metrics.json missing/invalid — normal gate fail
                         gate_fail_count += 1
                         last_gate_summary = f"metrics.json: {mg_err}"
                         self._log(issue.id,
@@ -1321,50 +1277,44 @@ class Engine:
                         last_gate_output = mg_err
                         issue = self.issue_store.get(issue.id)
                         continue
-                    mg_valid, mg_failures = self._validate_metrics(
-                        mg_metrics, metric_gate_targets)
-                    if not mg_valid:
-                        metric_gate_retries += 1
-                        metrics_str = ", ".join(
-                            f"{k}={v:.4f}" for k, v in mg_metrics.items())
+
+                    metrics_str = ", ".join(f"{k}={v:.4f}" for k, v in mg_metrics.items())
+
+                    # Check if all targets are met
+                    targets_ok, _ = self._validate_metrics(mg_metrics, metric_targets)
+                    if targets_ok:
                         self._log(issue.id,
-                            f"Metric gate FAIL ({metric_gate_retries}/{max_metric_retries}): "
-                            f"{'; '.join(mg_failures)}")
-                        if metric_gate_retries >= max_metric_retries:
+                            f"Metric gate: all targets met ✓ ({metrics_str})")
+                        stagnant_count = 0
+                    else:
+                        # Compare with previous round (Pareto check)
+                        prev_metrics = self.issue_store.get_last_metrics(issue.id)
+                        is_pareto = self._is_pareto_improvement(
+                            mg_metrics, prev_metrics, metric_targets, improvement_threshold)
+                        if is_pareto:
+                            stagnant_count = 0
                             self._log(issue.id,
-                                "Metric gate: max retries reached → BLOCKED")
-                            await self._block_issue(
-                                issue.id, task, BLOCKED_METRIC_GATE,
-                                from_status=IssueStatus.DEVELOPING,
-                                event_reason=f"metric gate failed {max_metric_retries} times")
-                            return
-                        # Revert code to checkpoint
-                        revert_ok = await wt_manager.revert_to(
-                            task.worktree_path, checkpoint)
-                        if not revert_ok:
+                                f"Metric gate: Pareto improvement ✓ ({metrics_str})")
+                        else:
+                            stagnant_count += 1
                             self._log(issue.id,
-                                "Metric gate: code revert failed → BLOCKED")
-                            await self._block_issue(
-                                issue.id, task, BLOCKED_METRIC_GATE,
-                                from_status=IssueStatus.DEVELOPING,
-                                event_reason="git revert failed after metric gate failure")
-                            return
-                        self._log(issue.id,
-                            f"Metric gate: code reverted to pre-R{round_num}")
-                        self._update_metric_gate_feedback(
-                            issue.id, round_num, metrics_str, mg_failures)
-                        last_gate_summary = f"Metric gate failed: {'; '.join(mg_failures)}"
-                        last_gate_output = f"Metrics: {metrics_str}"
-                        # Reset session — agent must try different approach
-                        current_session_id = str(uuid.uuid4())
-                        use_resume = False
-                        issue = self.issue_store.get(issue.id)
-                        continue
-                    # Metric gate passed
-                    self._resolve_metric_gate_feedback(issue.id, round_num)
-                    self._log(issue.id,
-                        f"Metric gate PASS "
-                        f"({', '.join(f'{k}={v:.4f}' for k, v in mg_metrics.items())})")
+                                f"Metric gate: no Pareto improvement "
+                                f"({stagnant_count}/{max_stagnant}) ({metrics_str})")
+                            if stagnant_count >= max_stagnant:
+                                self._log(issue.id,
+                                    f"Metric gate: {max_stagnant} consecutive rounds "
+                                    f"without improvement → BLOCKED")
+                                self.issue_store.save_metrics_entry(
+                                    issue.id, round_num, mg_metrics)
+                                await self._block_issue(
+                                    issue.id, task, BLOCKED_METRIC_STAGNATED,
+                                    from_status=IssueStatus.DEVELOPING,
+                                    event_reason=f"metric stagnated for {max_stagnant} rounds: {metrics_str}")
+                                return
+
+                    # Record metrics for next round's comparison
+                    self.issue_store.save_metrics_entry(
+                        issue.id, round_num, mg_metrics)
 
                 # Review (neural, based on git diff)
                 self.issue_store.transition_status(issue.id, IssueStatus.DEV_REVIEW)
