@@ -1229,6 +1229,11 @@ class Engine:
                         f"{action_label} R{round_num} Agent 产出{feat_summary}\n"
                         f"内容长度: {len(content)} 字符, 存档: {vfile}")
 
+                # Protect metrics.json from pytest pollution:
+                # save pre-gate mtime, restore after pytest if it was overwritten
+                _metrics_path = Path(task.worktree_path) / "metrics.json"
+                _pre_gate_mtime = _metrics_path.stat().st_mtime if _metrics_path.exists() else None
+
                 # Gate (symbolic)
                 gate_ok, gate_msg, gate_output, gate_elapsed = await self._gate_check(
                     issue.id, task.worktree_path, proposed_tests)
@@ -1270,6 +1275,15 @@ class Engine:
                 self._log(issue.id, f"Gate PASS R{round_num} ({gate_elapsed:.1f}s)")
                 gate_fail_count = 0  # reset on gate pass
                 last_gate_output = ""
+
+                # If pytest overwrote metrics.json, delete it (test pollution)
+                if _metrics_path.exists():
+                    _post_gate_mtime = _metrics_path.stat().st_mtime
+                    if _pre_gate_mtime is None or _post_gate_mtime != _pre_gate_mtime:
+                        # metrics.json was created or modified during pytest — not trustworthy
+                        _metrics_path.unlink()
+                        self._log(issue.id,
+                            "Metric gate: deleted metrics.json (overwritten by pytest)")
 
                 # Metric gate: Pareto improvement detection
                 if metric_targets:
