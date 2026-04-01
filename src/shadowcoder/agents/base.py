@@ -322,6 +322,7 @@ class BaseAgent(ABC):
                 feasibility=data.get("feasibility", "medium"),
                 estimated_complexity=data.get("estimated_complexity", "moderate"),
                 risks=data.get("risks", []),
+                codebase_match=data.get("codebase_match", True),
                 tech_stack_recommendation=data.get("tech_stack_recommendation"),
                 usage=usage)
         except Exception as e:

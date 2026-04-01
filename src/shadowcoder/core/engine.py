@@ -1466,7 +1466,7 @@ class Engine:
         if "设计" not in issue.sections or not issue.sections["设计"]:
             agent = self.agents.get(self.config.get_agent_for_phase("design"))
             request = AgentRequest(action="preflight", issue=issue,
-                context={"worktree_path": None})
+                context={"worktree_path": str(self.repo_path)})
             try:
                 pf = await agent.preflight(request)
                 self._track_usage(issue.id, pf.usage, phase="preflight")
@@ -1477,6 +1477,15 @@ class Engine:
                 if pf.tech_stack_recommendation:
                     pf_summary += f" | Tech: {pf.tech_stack_recommendation}"
                 self._log(issue.id, f"Preflight 评估{pf_dur}\n{pf_summary}")
+
+                if not pf.codebase_match:
+                    self._log(issue.id,
+                        "Preflight: codebase_match=false → BLOCKED，"
+                        "需求引用的核心模块在代码库中未找到")
+                    await self._block_issue(issue.id, None, BLOCKED_LOW_FEASIBILITY,
+                        from_status=IssueStatus.CREATED,
+                        event_reason=f"Preflight: codebase mismatch — {pf_summary}")
+                    return
 
                 if pf.feasibility == "low":
                     self._log(issue.id, "Preflight: feasibility=low → BLOCKED，等待人类确认")

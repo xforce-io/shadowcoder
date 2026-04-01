@@ -85,6 +85,7 @@ class PreflightOutput:
     feasibility: str              # "high" / "medium" / "low"
     estimated_complexity: str     # "simple" / "moderate" / "complex" / "very_complex"
     risks: list[str] = field(default_factory=list)
+    codebase_match: bool = True   # False if key modules referenced in requirements not found
     tech_stack_recommendation: str | None = None
     usage: AgentUsage | None = None
 
