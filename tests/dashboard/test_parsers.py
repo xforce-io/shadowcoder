@@ -1,5 +1,7 @@
 """Tests for dashboard parsers: LogParser, FeedbackParser, WorktreeParser."""
 from shadowcoder.dashboard.parsers import LogEntry, LogParser
+from shadowcoder.dashboard.parsers import FeedbackSummary, FeedbackParser
+from shadowcoder.dashboard.parsers import ChangedFile, WorktreeParser
 
 
 class TestLogParser:
@@ -65,3 +67,61 @@ class TestLogParser:
     def test_empty_log(self):
         entries = LogParser.parse_all("")
         assert entries == []
+
+
+class TestFeedbackParser:
+    def test_parse_empty(self):
+        data = {"items": [], "proposed_tests": [], "acceptance_tests": [], "supplementary_tests": []}
+        summary = FeedbackParser.summarize(data)
+        assert summary.verdict is None
+        assert summary.critical == 0
+        assert summary.high == 0
+
+    def test_parse_with_items(self):
+        data = {
+            "items": [
+                {"id": "1", "category": "bug", "description": "fix it",
+                 "severity": "CRITICAL", "resolved": False},
+                {"id": "2", "category": "style", "description": "rename",
+                 "severity": "MEDIUM", "resolved": True},
+                {"id": "3", "category": "bug", "description": "another",
+                 "severity": "HIGH", "resolved": False},
+            ],
+            "proposed_tests": [{"name": "test_a", "passed": True}],
+            "acceptance_tests": [],
+            "supplementary_tests": [],
+        }
+        summary = FeedbackParser.summarize(data)
+        assert summary.critical == 1
+        assert summary.high == 1
+        assert summary.medium == 0
+        assert summary.total == 2
+
+    def test_missing_severity_key(self):
+        data = {
+            "items": [{"id": "1", "category": "bug", "description": "x"}],
+            "proposed_tests": [], "acceptance_tests": [], "supplementary_tests": [],
+        }
+        summary = FeedbackParser.summarize(data)
+        assert summary.total == 0
+
+
+class TestWorktreeParser:
+    def test_parse_name_status(self):
+        output = "A\tsrc/auth.py\nM\tsrc/main.py\nD\told.py\n"
+        files = WorktreeParser.parse_name_status(output)
+        assert len(files) == 3
+        assert files[0].status == "A"
+        assert files[0].path == "src/auth.py"
+        assert files[1].status == "M"
+        assert files[2].status == "D"
+
+    def test_parse_empty(self):
+        files = WorktreeParser.parse_name_status("")
+        assert files == []
+
+    def test_parse_stat(self):
+        output = " src/auth.py | 142 +++\n src/main.py |  15 ++-\n 2 files changed\n"
+        stats = WorktreeParser.parse_stat(output)
+        assert stats["src/auth.py"] == "142 +++"
+        assert stats["src/main.py"] == "15 ++-"
