@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block content %}
+{% include "partials/topbar.html" %}
+
+{% if issue %}
+<div hx-ext="sse" sse-connect="/sse/issue/{{ issue.id }}">
+    <div id="status-bar" sse-swap="status">
+        {% include "partials/status_bar.html" %}
+    </div>
+
+    <div id="pipeline" sse-swap="pipeline">
+        {% include "partials/pipeline.html" %}
+    </div>
+
+    {% if issue.blocked_reason %}
+    <div class="blocked-banner">
+        BLOCKED: {{ issue.blocked_reason }}
+    </div>
+    {% endif %}
+
+    <div class="main-content">
+        <div class="log-panel">
+            <div class="panel-header">LIVE ACTIVITY</div>
+            <div class="log-entries" id="log-entries">
+                {% for entry in issue.log_entries %}
+                {% include "partials/log.html" %}
+                {% endfor %}
+            </div>
+            <div id="log-append" hx-swap-oob="beforeend:#log-entries" sse-swap="log"></div>
+        </div>
+
+        <div class="right-panels">
+            <div class="right-panel files">
+                <div id="files-panel" sse-swap="files">
+                    {% include "partials/files.html" %}
+                </div>
+            </div>
+
+            <div class="right-panel review">
+                <div id="review-panel" sse-swap="review">
+                    {% include "partials/review.html" %}
+                </div>
+            </div>
+
+            <div class="right-panel gate">
+                <div id="gate-panel" sse-swap="gate">
+                    {% include "partials/gate.html" %}
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+<div class="empty-state">
+    No issues found. Start a task with <code>python scripts/run_real.py &lt;repo&gt; run</code>
+</div>
+{% endif %}
+{% endblock %}

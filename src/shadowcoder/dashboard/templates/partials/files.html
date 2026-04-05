@@ -1,0 +1,14 @@
+<div class="panel-header">CHANGED FILES <span class="count">{{ issue.changed_files | length }}</span></div>
+<div class="panel-body">
+    {% if issue.changed_files %}
+    {% for f in issue.changed_files %}
+    <div class="file-item">
+        <span class="file-status {{ f.status }}">{{ f.status }}</span>
+        <span class="file-path">{{ f.path }}</span>
+        <span class="file-stat">{{ f.stat }}</span>
+    </div>
+    {% endfor %}
+    {% else %}
+    <div style="color: var(--text-muted); font-size: 11px;">No changes yet</div>
+    {% endif %}
+</div>

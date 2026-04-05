@@ -1,0 +1,20 @@
+<div class="panel-header">METRIC GATE</div>
+<div class="panel-body">
+    {% if metrics %}
+    <table class="metrics-table">
+        <tr><th>Metric</th><th>Required</th><th>Actual</th><th>Status</th></tr>
+        {% for m in metrics %}
+        <tr>
+            <td>{{ m.name }}</td>
+            <td style="color: var(--text-secondary);">{{ m.threshold }}</td>
+            <td class="{% if m.passed %}metric-pass{% else %}metric-fail{% endif %}">{{ m.value }}</td>
+            <td class="{% if m.passed %}metric-pass{% else %}metric-fail{% endif %}">
+                {% if m.passed %}✓ PASS{% else %}✗ FAIL{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <div style="color: var(--text-muted); font-size: 11px;">No metric gate configured</div>
+    {% endif %}
+</div>

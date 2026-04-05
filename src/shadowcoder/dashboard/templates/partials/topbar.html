@@ -1,0 +1,12 @@
+<div class="topbar">
+    <span class="topbar-brand">ShadowCoder</span>
+    <span class="topbar-repo">{{ repo_path }}</span>
+    <span class="topbar-spacer"></span>
+    <select onchange="window.location.href='/?issue=' + this.value">
+        {% for i in issues %}
+        <option value="{{ i.id }}" {% if issue and i.id == issue.id %}selected{% endif %}>
+            #{{ i.id }} {{ i.title }} ({{ i.status | upper }})
+        </option>
+        {% endfor %}
+    </select>
+</div>

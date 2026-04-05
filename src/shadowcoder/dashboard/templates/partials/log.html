@@ -1,0 +1,7 @@
+<div class="log-entry">
+    <span class="log-ts">{{ entry.timestamp }}</span>
+    <span class="log-text {{ entry.category }}">{{ entry.text }}</span>
+</div>
+{% for line in entry.continuation %}
+<div class="log-continuation">{{ line }}</div>
+{% endfor %}

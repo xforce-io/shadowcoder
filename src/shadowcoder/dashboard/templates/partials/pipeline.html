@@ -1,0 +1,36 @@
+<div class="pipeline">
+    <div class="pipeline-bar">
+        {% for stage in issue.pipeline %}
+        <div class="pipeline-segment {% if stage.name == 'Develop' %}develop{% endif %}">
+            <div class="pipeline-label {{ stage.state }}">
+                {% if stage.state == 'completed' %}{{ stage.name }} ✓
+                {% elif stage.state == 'active' %}▼ {{ stage.name }}
+                {% elif stage.state == 'failed' %}{{ stage.name }} ✗
+                {% else %}{{ stage.name }}
+                {% endif %}
+            </div>
+            <div class="pipeline-fill {{ stage.state }}"></div>
+        </div>
+        {% endfor %}
+    </div>
+
+    {% if issue.retries %}
+    <div class="retry-timeline">
+        {% for r in issue.retries %}
+        {% if not loop.first %}
+        <span class="retry-arrow">→</span>
+        {% endif %}
+        <div class="retry-item {{ r.result }}">
+            <span class="retry-round {{ r.result }}">{{ r.round }}</span>
+            <span>
+                {% if r.result == 'fail' %}✗ {{ r.summary }}
+                {% elif r.result == 'pass' %}✓
+                {% elif r.result == 'reverted' %}⏪ reverted
+                {% else %}●
+                {% endif %}
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>

@@ -1,0 +1,14 @@
+<div class="panel-header">REVIEW SUMMARY</div>
+<div class="panel-body">
+    {% if issue.feedback.verdict %}
+    <span class="review-verdict {% if issue.feedback.passed %}passed{% else %}failed{% endif %}">
+        {{ issue.feedback.verdict }}
+    </span>
+    {% endif %}
+    <span class="review-counts">
+        <span class="sev-critical">C:{{ issue.feedback.critical }}</span>
+        <span class="sev-high">H:{{ issue.feedback.high }}</span>
+        <span class="sev-medium">M:{{ issue.feedback.medium }}</span>
+        <span class="sev-low">L:{{ issue.feedback.low }}</span>
+    </span>
+</div>

@@ -1,0 +1,8 @@
+<div class="panel-header">GATE OUTPUT</div>
+<div class="panel-body">
+    {% if issue.gate_output %}
+    <div class="gate-output">{{ issue.gate_output }}</div>
+    {% else %}
+    <div style="color: var(--text-muted); font-size: 11px;">No gate output yet</div>
+    {% endif %}
+</div>

@@ -1,0 +1,11 @@
+<div class="status-bar">
+    <span class="status-badge {{ issue.status }}">{{ issue.status | upper }}</span>
+    {% if issue.assignee %}
+    <span class="status-sep">·</span>
+    <span class="status-agent">{{ issue.assignee }}</span>
+    {% endif %}
+    <span class="status-sep">·</span>
+    <span class="status-cost">{{ issue.cost }}</span>
+    <span class="status-sep">·</span>
+    <span class="status-time" id="elapsed-time" data-created="{{ issue.created }}">--</span>
+</div>
