@@ -13,6 +13,8 @@ Examples:
   python scripts/run_real.py ~/lab/coder-playground cleanup 1
   python scripts/run_real.py ~/lab/coder-playground cleanup 1 --delete-branch
   python scripts/run_real.py ~/lab/coder-playground init
+  python scripts/run_real.py ~/lab/coder-playground dashboard
+  python scripts/run_real.py ~/lab/coder-playground dashboard --port 9000
 """
 import asyncio
 import subprocess
@@ -132,6 +134,23 @@ async def main():
 
     if command == "init":
         _init_project(repo_path)
+        return
+
+    if command == "dashboard":
+        port = 8420
+        host = "127.0.0.1"
+        i = 0
+        while i < len(args):
+            if args[i] == "--port" and i + 1 < len(args):
+                port = int(args[i + 1])
+                i += 2
+            elif args[i] == "--host" and i + 1 < len(args):
+                host = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        from shadowcoder.dashboard.server import run_server
+        run_server(repo_path, host=host, port=port)
         return
 
     config = Config(repo_path=repo_path)
